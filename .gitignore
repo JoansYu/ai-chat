@@ -1,0 +1,29 @@
+# ===== 编译 / 构建输出 =====
+target/
+out/
+build/
+dist/
+bin/
+*.class
+*.jar
+*.war
+*.ear
+
+# ===== IntelliJ IDEA =====
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# ===== 前端依赖 =====
+node_modules/
+
+# ===== 日志 =====
+*.log
+
+# ===== 操作系统文件 =====
+.DS_Store
+Thumbs.db
+
+# ===== 环境变量 / 密钥（按需自行取消注释）=====
+#.env
