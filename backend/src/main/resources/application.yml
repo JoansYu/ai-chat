@@ -1,0 +1,24 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ai-chat-backend
+
+# ============ AI 对话配置 ============
+# 已接入本地 Ollama 大模型（OpenAI 兼容接口）
+# 切换模型：把 model 改成 ollama list 中的任意模型名
+# 注意：qwen3.6:latest 约 23GB，本机内存不足无法加载，故使用 qwen1.5:1.8b
+ai:
+  chat:
+    llm:
+      enabled: true
+      base-url: http://localhost:11434/v1
+      api-key: ollama
+      model: qwen1.5:1.8b
+      temperature: 0.7
+      max-tokens: 2048
+
+logging:
+  level:
+    com.aichat: info
