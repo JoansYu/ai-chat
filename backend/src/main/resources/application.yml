@@ -16,7 +16,9 @@ ai:
       base-url: http://localhost:11434/v1
       api-key: ollama
       model: qwen1.5:1.8b
-      temperature: 0.7
+      temperature: 0.3
+      frequency-penalty: 0.2
+      presence-penalty: 0.0
       max-tokens: 2048
 
 logging:

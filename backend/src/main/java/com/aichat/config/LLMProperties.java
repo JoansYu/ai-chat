@@ -23,7 +23,13 @@ public class LLMProperties {
     private String model = "gpt-4o-mini";
 
     /** 采样温度 */
-    private double temperature = 0.7;
+    private double temperature = 0.3;
+
+    /** Penalizes repeating tokens for providers supporting the OpenAI fields. */
+    private double frequencyPenalty = 0.2;
+
+    /** Encourages introducing new tokens when supported by the provider. */
+    private double presencePenalty = 0.0;
 
     /** 最大生成 Token 数 */
     private int maxTokens = 2048;
@@ -66,6 +72,22 @@ public class LLMProperties {
 
     public void setTemperature(double temperature) {
         this.temperature = temperature;
+    }
+
+    public double getFrequencyPenalty() {
+        return frequencyPenalty;
+    }
+
+    public void setFrequencyPenalty(double frequencyPenalty) {
+        this.frequencyPenalty = frequencyPenalty;
+    }
+
+    public double getPresencePenalty() {
+        return presencePenalty;
+    }
+
+    public void setPresencePenalty(double presencePenalty) {
+        this.presencePenalty = presencePenalty;
     }
 
     public int getMaxTokens() {

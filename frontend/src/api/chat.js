@@ -35,6 +35,7 @@ export async function getMessages(sessionId){
 export async function streamChat({sessionId, message, onToken, onDone, onError, signal}){
     const BASE_URL = import.meta.env?.VITE_API_BASE_URL || '/api'
     let fullText = ''
+    const seenEventIds = new Set()
 
     await fetchEventSource(`${BASE_URL}/chat/stream`, {
         method: 'POST',
@@ -66,19 +67,30 @@ export async function streamChat({sessionId, message, onToken, onDone, onError, 
                 return
             }
 
-            try {
-                const evt = JSON.parse(msg.data)
-                if (evt.type === 'token'){
-                    const content = evt.content || ''
-                    fullText += content
-                    onToken?.(content)
-                } else if (evt.type === 'done') {
-                    onDone?.(evt.content ?? fullText)
-                } else if (evt.type === 'error') {
-                    throw new Error(evt.message || '对话出错')
+            if (msg.id) {
+                if (seenEventIds.has(msg.id)) {
+                    return
                 }
+                seenEventIds.add(msg.id)
+            }
+
+            let evt
+
+            try {
+                evt = JSON.parse(msg.data)
             } catch (err) {
                 console.warn('JSON 解析异常或业务异常', err, msg.data)
+                return
+            }
+
+            if (evt.type === 'token') {
+                const content = evt.content || ''
+                fullText += content
+                onToken?.(content)
+            } else if (evt.type === 'done') {
+                onDone?.(evt.content ?? fullText)
+            } else if (evt.type === 'error') {
+                throw new Error(evt.message || '对话出错')
             }
         },
 

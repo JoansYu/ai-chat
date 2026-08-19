@@ -70,26 +70,28 @@ public class OpenAIClient implements LLMClient {
         }
 
         // 解析 SSE 流：data: {...} \n data: [DONE]
-        BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8));
-        String line;
-        while ((line = reader.readLine()) != null) {
-            String trimmed = line.trim();
-            if (!trimmed.startsWith("data:")) {
-                continue;
-            }
-            String data = trimmed.substring(5).trim();
-            if (data.isEmpty()) {
-                continue;
-            }
-            if ("[DONE]".equals(data)) {
-                break;
-            }
-            JsonNode node = objectMapper.readTree(data);
-            JsonNode delta = node.path("choices").path(0).path("delta").path("content");
-            if (delta != null && !delta.isMissingNode() && !delta.isNull()) {
-                String text = delta.asText();
-                if (!text.isEmpty()) {
-                    onToken.accept(text);
+        try (InputStream responseBody = response.body();
+             BufferedReader reader = new BufferedReader(new InputStreamReader(responseBody, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (!trimmed.startsWith("data:")) {
+                    continue;
+                }
+                String data = trimmed.substring(5).trim();
+                if (data.isEmpty()) {
+                    continue;
+                }
+                if ("[DONE]".equals(data)) {
+                    break;
+                }
+                JsonNode node = objectMapper.readTree(data);
+                JsonNode delta = node.path("choices").path(0).path("delta").path("content");
+                if (delta != null && !delta.isMissingNode() && !delta.isNull()) {
+                    String text = delta.asText();
+                    if (!text.isEmpty()) {
+                        onToken.accept(text);
+                    }
                 }
             }
         }
@@ -100,6 +102,8 @@ public class OpenAIClient implements LLMClient {
         body.put("model", props.getModel());
         body.put("stream", stream);
         body.put("temperature", props.getTemperature());
+        body.put("frequency_penalty", props.getFrequencyPenalty());
+        body.put("presence_penalty", props.getPresencePenalty());
         body.put("max_tokens", props.getMaxTokens());
         body.put("messages", messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
