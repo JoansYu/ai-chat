@@ -1,7 +1,7 @@
 <script setup>
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
-import { streamChat, getMessages, createSession } from '../api'
-import { renderMarkdown } from '../utils/markdown'
+import { ref, watch, nextTick, onBeforeUnmount, computed, reactive } from 'vue'
+import { streamChat, getMessages, createSession } from '../api/chat.js'
+import { renderMarkdown } from '../utils/markdown' // 确保你的路径是对的
 
 const props = defineProps({
   session: { type: Object, default: null }
@@ -9,27 +9,74 @@ const props = defineProps({
 
 const emit = defineEmits(['new', 'created', 'refreshed'])
 
-const messages = ref([])
+// =================【核心状态：这三个变量绝对不能漏！】=================
+// 1. 本地缓存池：{ 'session_id': [消息数组] }
+const sessionCache = ref({})
+
+// 2. 网络控制器池：Map('session_id' -> AbortController)
+const abortControllers = reactive(new Map())
+
+// 3. 当前屏幕显示的消息
+const messages = computed(() => {
+  const id = props.session?.id
+  return id ? (sessionCache.value[id] || []) : []
+})
+
+// 4. 当前屏幕的加载状态
+const loading = computed(() => {
+  const id = props.session?.id
+  return id ? abortControllers.has(id) : false
+})
+// ===============================================================
+
 const input = ref('')
-const loading = ref(false)
 const inputRef = ref(null)
 const listRef = ref(null)
-let abortController = null
 
-watch(
-  () => props.session?.id,
-  async (id) => {
-    messages.value = []
-    if (id) {
-      try {
-        messages.value = await getMessages(id)
-      } catch (e) {
-        console.error('加载历史消息失败', e)
-      }
+// 暴露方法给 App.vue 调用：必须写在变量定义之后
+defineExpose({
+  abortSession(id) {
+    if (abortControllers.has(id)) {
+      abortControllers.get(id).abort()
+      abortControllers.delete(id)
     }
-    scrollToBottom()
-  },
-  { immediate: true }
+    if (sessionCache.value[id]) {
+      delete sessionCache.value[id]
+    }
+  }
+})
+
+// 监听左侧列表的点击切换
+watch(
+    () => props.session?.id,
+    async (id) => {
+      if (!id) return
+
+      if (!sessionCache.value[id]) {
+        sessionCache.value[id] = []
+        try {
+          const res = await getMessages(id)
+          const history = res.data || res || []
+          if (history.length > 0) {
+            sessionCache.value[id] = history
+          }
+        } catch (e) {
+          console.error('加载历史消息失败', e)
+        }
+      } else {
+        if (!abortControllers.has(id)) {
+          try {
+            const res = await getMessages(id)
+            const history = res.data || res || []
+            if (history.length > 0) {
+              sessionCache.value[id] = history
+            }
+          } catch (e) { /* 忽略更新错误 */ }
+        }
+      }
+      scrollToBottom()
+    },
+    { immediate: true }
 )
 
 function scrollToBottom() {
@@ -40,59 +87,79 @@ function scrollToBottom() {
   })
 }
 
+// 发送消息
 async function send() {
   const text = input.value.trim()
   if (!text || loading.value) return
 
-  // 确保有会话 ID（没有则先创建）
-  let sessionId = props.session?.id
-  if (!sessionId) {
+  let currentSessionId = props.session?.id
+
+  if (!currentSessionId) {
     try {
       const created = await createSession()
-      sessionId = created.id
-      emit('created', created)
+      currentSessionId = created.data?.id || created.id
+      emit('created', created.data || created)
     } catch (e) {
-      alert('创建会话失败：' + e.message)
+      alert('创建会话失败：' + (e.message || '未知错误'))
       return
     }
   }
 
-  // 追加用户消息
-  messages.value.push({ role: 'user', content: text })
+  if (!sessionCache.value[currentSessionId]) {
+    sessionCache.value[currentSessionId] = []
+  }
+
+  sessionCache.value[currentSessionId].push({ role: 'user', content: text })
   input.value = ''
   scrollToBottom()
 
-  // 追加空的助手消息，用于流式填充
-  messages.value.push({ role: 'assistant', content: '' })
-  const aiIndex = messages.value.length - 1
-  loading.value = true
-  abortController = new AbortController()
+  const uniqueId = 'msg_' + Date.now().toString()
+  sessionCache.value[currentSessionId].push({ role: 'assistant', content: '', _flag: uniqueId })
+
+  const controller = new AbortController()
+  abortControllers.set(currentSessionId, controller)
 
   try {
     await streamChat({
-      sessionId,
+      sessionId: currentSessionId,
       message: text,
-      signal: abortController.signal,
+      signal: controller.signal,
       onToken: (token) => {
-        messages.value[aiIndex].content += token
-        scrollToBottom()
+        const targetList = sessionCache.value[currentSessionId]
+        if (targetList) {
+          const targetMsg = targetList.find(m => m._flag === uniqueId)
+          if (targetMsg) targetMsg.content += token
+        }
+        if (props.session?.id === currentSessionId) {
+          scrollToBottom()
+        }
       },
       onDone: () => {
-        if (messages.value[aiIndex].content === '') {
-          messages.value[aiIndex].content = '（无回复）'
+        const targetList = sessionCache.value[currentSessionId]
+        if (targetList) {
+          const targetMsg = targetList.find(m => m._flag === uniqueId)
+          if (targetMsg && targetMsg.content === '') {
+            targetMsg.content = '（无回复）'
+          }
         }
+        abortControllers.delete(currentSessionId)
         emit('refreshed')
       }
     })
   } catch (e) {
-    if (e.name !== 'AbortError') {
-      messages.value[aiIndex].content = '⚠️ ' + (e.message || '对话出错，请稍后重试')
+    const targetList = sessionCache.value[currentSessionId]
+    if (targetList) {
+      const targetMsg = targetList.find(m => m._flag === uniqueId)
+      if (targetMsg && e.name !== 'AbortError') {
+        targetMsg.content = '⚠️ ' + (e.message || '对话出错，请稍后重试')
+      }
     }
   } finally {
-    loading.value = false
-    abortController = null
-    scrollToBottom()
-    inputRef.value?.focus()
+    abortControllers.delete(currentSessionId)
+    if (props.session?.id === currentSessionId) {
+      scrollToBottom()
+      nextTick(() => inputRef.value?.focus())
+    }
   }
 }
 
@@ -103,12 +170,21 @@ function handleKeydown(e) {
   }
 }
 
+// 主动点击“停止生成”按钮
 function stop() {
-  abortController?.abort()
+  const id = props.session?.id
+  if (id && abortControllers.has(id)) {
+    abortControllers.get(id).abort()
+    abortControllers.delete(id)
+  }
 }
 
+// 整个组件卸载时
 onBeforeUnmount(() => {
-  abortController?.abort()
+  if (abortControllers && abortControllers.size > 0) {
+    abortControllers.forEach(controller => controller.abort())
+    abortControllers.clear()
+  }
 })
 </script>
 
@@ -143,14 +219,15 @@ onBeforeUnmount(() => {
 
       <!-- 消息列表 -->
       <div
-        v-for="(m, i) in messages"
-        :key="i"
-        class="message-row"
-        :class="m.role"
+          v-for="(m, i) in messages"
+          :key="i"
+          class="message-row"
+          :class="m.role"
       >
         <div class="avatar">{{ m.role === 'user' ? '我' : 'AI' }}</div>
         <div class="bubble">
-          <div v-if="m.role === 'assistant' && m.content" class="markdown-body" v-html="renderMarkdown(m.content)"></div>
+          <div v-if="m.role === 'assistant' && m.content" class="markdown-body"
+               v-html="renderMarkdown(m.content)"></div>
           <div v-else-if="m.role === 'assistant' && loading && i === messages.length - 1" class="typing">
             <span></span><span></span><span></span>
           </div>
@@ -165,20 +242,20 @@ onBeforeUnmount(() => {
     <footer class="input-area">
       <div class="input-box">
         <textarea
-          ref="inputRef"
-          v-model="input"
-          :disabled="loading"
-          rows="1"
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-          @keydown="handleKeydown"
+            ref="inputRef"
+            v-model="input"
+            :disabled="loading"
+            rows="1"
+            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+            @keydown="handleKeydown"
         ></textarea>
         <button
-          class="send-btn"
-          :disabled="loading || !input.trim()"
-          @click="send"
+            class="send-btn"
+            :disabled="loading || !input.trim()"
+            @click="send"
         >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
           </svg>
         </button>
       </div>
@@ -392,8 +469,14 @@ onBeforeUnmount(() => {
 }
 
 @keyframes blink {
-  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
-  40% { opacity: 1; transform: translateY(-3px); }
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
 }
 
 .input-area {

@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import {clearToken} from "../utils/auth.js";
 
 defineProps({
   sessions: { type: Array, default: () => [] },
@@ -19,6 +20,12 @@ function formatTime(ts) {
   if (sameDay) return hm
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
+
+function handleLogout(){
+  if (confirm('确定要退出登录吗？')) {
+    clearToken()
+  }
+}
 </script>
 
 <template>
@@ -35,20 +42,20 @@ function formatTime(ts) {
 
     <div class="list-body">
       <div
-        v-for="s in sessions"
-        :key="s.id"
-        class="session-item"
-        :class="{ active: s.id === activeId }"
-        @click="emit('select', s.id)"
-        @mouseenter="hoverId = s.id"
-        @mouseleave="hoverId = null"
+          v-for="s in sessions"
+          :key="s.id"
+          class="session-item"
+          :class="{ active: s.id === activeId }"
+          @click="emit('select', s.id)"
+          @mouseenter="hoverId = s.id"
+          @mouseleave="hoverId = null"
       >
         <span class="session-title">{{ s.title || '新会话' }}</span>
         <button
-          v-if="hoverId === s.id || s.id === activeId"
-          class="btn-del"
-          title="删除会话"
-          @click.stop="emit('remove', s.id)"
+            v-if="hoverId === s.id || s.id === activeId"
+            class="btn-del"
+            title="删除会话"
+            @click.stop="emit('remove', s.id)"
         >
           ✕
         </button>
@@ -58,7 +65,12 @@ function formatTime(ts) {
       <div v-if="sessions.length === 0" class="empty-tip">暂无会话，点击「新对话」开始吧</div>
     </div>
 
-    <div class="list-footer">Vue 3 + Spring Boot 3</div>
+    <div class="list-footer">
+      <div class="user-info">
+        Vue 3 + Spring Boot 3
+      </div>
+      <button class="btn-logout" @click="handleLogout">退出登录</button>
+    </div>
   </aside>
 </template>
 
@@ -204,5 +216,25 @@ function formatTime(ts) {
   font-size: 12px;
   color: #c0c4cc;
   border-top: 1px solid #f1f2f4;
+}
+
+.user-info {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.btn-logout {
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.btn-logout:hover {
+  background: #f3f4f6;
+  color: #ef4444;
 }
 </style>

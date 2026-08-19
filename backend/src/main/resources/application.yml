@@ -22,3 +22,10 @@ ai:
 logging:
   level:
     com.aichat: info
+
+sa-token:
+  active-timeout: 1800 # 30分钟不操作就过期
+  timeout: 86400 # 超过一天也过期
+  token-name: satoken
+  is-read-header: true
+  is-read-cookie: true

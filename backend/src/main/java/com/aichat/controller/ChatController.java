@@ -1,5 +1,6 @@
 package com.aichat.controller;
 
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.aichat.dto.ChatRequest;
 import com.aichat.service.ChatService;
 import org.springframework.http.MediaType;
@@ -20,6 +21,7 @@ import java.util.concurrent.Executors;
  */
 @RestController
 @RequestMapping("/api/chat")
+@SaCheckLogin
 public class ChatController {
 
     private final ChatService chatService;
