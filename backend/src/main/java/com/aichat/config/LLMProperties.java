@@ -33,6 +33,8 @@ public class LLMProperties {
 
     /** 最大生成 Token 数 */
     private int maxTokens = 2048;
+    private int requestTimeoutSeconds = 180;
+    private boolean enableThinking = false;
 
     public boolean isEnabled() {
         return enabled;
@@ -96,5 +98,21 @@ public class LLMProperties {
 
     public void setMaxTokens(int maxTokens) {
         this.maxTokens = maxTokens;
+    }
+
+    public int getRequestTimeoutSeconds() {
+        return requestTimeoutSeconds;
+    }
+
+    public void setRequestTimeoutSeconds(int requestTimeoutSeconds) {
+        this.requestTimeoutSeconds = requestTimeoutSeconds;
+    }
+
+    public boolean isEnableThinking() {
+        return enableThinking;
+    }
+
+    public void setEnableThinking(boolean enableThinking) {
+        this.enableThinking = enableThinking;
     }
 }

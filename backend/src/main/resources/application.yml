@@ -13,13 +13,16 @@ ai:
   chat:
     llm:
       enabled: true
-      base-url: http://localhost:11434/v1
-      api-key: ollama
-      model: qwen1.5:1.8b
+      base-url: https://llm-6r96xfne4n7pz3o0.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+      api-key: sk-c8f8cf37cec64bbba8dabcbad7697a5e
+      model: qwen3.8-max
       temperature: 0.3
       frequency-penalty: 0.2
       presence-penalty: 0.0
       max-tokens: 2048
+      request-timeout-seconds: 180
+      enable-thinking: false
+
 
 logging:
   level:

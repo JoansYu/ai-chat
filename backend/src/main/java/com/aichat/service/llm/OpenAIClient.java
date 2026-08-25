@@ -53,12 +53,20 @@ public class OpenAIClient implements LLMClient {
 
     @Override
     public void streamChat(List<ChatMessage> messages, Consumer<String> onToken) throws Exception {
+        streamChat(messages, onToken, ignored -> { });
+    }
+
+    @Override
+    public void streamChat(List<ChatMessage> messages,
+                           Consumer<String> onToken,
+                           Consumer<String> onReasoning) throws Exception {
         Map<String, Object> body = buildRequestBody(messages, true);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(props.getBaseUrl() + "/chat/completions"))
                 .header("Authorization", "Bearer " + props.getApiKey())
                 .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(Math.max(10, props.getRequestTimeoutSeconds())))
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
                 .build();
 
@@ -86,7 +94,12 @@ public class OpenAIClient implements LLMClient {
                     break;
                 }
                 JsonNode node = objectMapper.readTree(data);
-                JsonNode delta = node.path("choices").path(0).path("delta").path("content");
+                JsonNode deltaNode = node.path("choices").path(0).path("delta");
+                JsonNode reasoning = deltaNode.path("reasoning_content");
+                if (!reasoning.isMissingNode() && !reasoning.isNull() && !reasoning.asText().isEmpty()) {
+                    onReasoning.accept(reasoning.asText());
+                }
+                JsonNode delta = deltaNode.path("content");
                 if (delta != null && !delta.isMissingNode() && !delta.isNull()) {
                     String text = delta.asText();
                     if (!text.isEmpty()) {
@@ -105,6 +118,8 @@ public class OpenAIClient implements LLMClient {
         body.put("frequency_penalty", props.getFrequencyPenalty());
         body.put("presence_penalty", props.getPresencePenalty());
         body.put("max_tokens", props.getMaxTokens());
+        // Qwen-compatible APIs use this field to disable long hidden reasoning.
+        body.put("enable_thinking", props.isEnableThinking());
         body.put("messages", messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .collect(Collectors.toList()));

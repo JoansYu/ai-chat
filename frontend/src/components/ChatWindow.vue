@@ -1,190 +1,197 @@
 <script setup>
-import { ref, watch, nextTick, onBeforeUnmount, computed, reactive } from 'vue'
-import { streamChat, getMessages, createSession } from '../api/chat.js'
-import { renderMarkdown } from '../utils/markdown' // 确保你的路径是对的
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { createSession, getMessages, streamChat } from '../api/chat.js'
+import { renderMarkdown } from '../utils/markdown'
 
-const props = defineProps({
-  session: { type: Object, default: null }
-})
+const props = defineProps({ session: { type: Object, default: null } })
+const emit = defineEmits(['created', 'refreshed'])
 
-const emit = defineEmits(['new', 'created', 'refreshed'])
-
-// =================【核心状态：这三个变量绝对不能漏！】=================
-// 1. 本地缓存池：{ 'session_id': [消息数组] }
 const sessionCache = ref({})
-
-// 2. 网络控制器池：Map('session_id' -> AbortController)
 const abortControllers = reactive(new Map())
+const metaBySession = reactive(new Map())
+const lastRequestBySession = reactive(new Map())
+const taskMode = ref(false)
+const input = ref('')
+const inputRef = ref(null)
+const listRef = ref(null)
+const now = ref(Date.now())
+const clock = setInterval(() => { now.value = Date.now() }, 1000)
 
-// 3. 当前屏幕显示的消息
 const messages = computed(() => {
   const id = props.session?.id
   return id ? (sessionCache.value[id] || []) : []
 })
-
-// 4. 当前屏幕的加载状态
 const loading = computed(() => {
   const id = props.session?.id
   return id ? abortControllers.has(id) : false
 })
-// ===============================================================
-
-const input = ref('')
-const inputRef = ref(null)
-const listRef = ref(null)
-
-// 暴露方法给 App.vue 调用：必须写在变量定义之后
-defineExpose({
-  abortSession(id) {
-    if (abortControllers.has(id)) {
-      abortControllers.get(id).abort()
-      abortControllers.delete(id)
-    }
-    if (sessionCache.value[id]) {
-      delete sessionCache.value[id]
-    }
-  }
+const currentMeta = computed(() => metaBySession.get(props.session?.id) || null)
+const elapsedSeconds = computed(() => {
+  const meta = currentMeta.value
+  if (!meta?.startedAt) return 0
+  return Math.max(0, Math.floor((now.value - meta.startedAt) / 1000))
 })
 
-// 监听左侧列表的点击切换
-watch(
-    () => props.session?.id,
-    async (id) => {
-      if (!id) return
+function ensureMeta(id) {
+  if (!metaBySession.has(id)) {
+    metaBySession.set(id, {
+      status: 'idle', statusMessage: 'Ready', requestId: '', startedAt: 0,
+      lastEventAt: 0, lastEvent: '', plan: [], step: 0, total: 0, error: ''
+    })
+  }
+  return metaBySession.get(id)
+}
 
-      if (!sessionCache.value[id]) {
-        sessionCache.value[id] = []
-        try {
-          const res = await getMessages(id)
-          const history = res.data || res || []
-          if (history.length > 0) {
-            sessionCache.value[id] = history
-          }
-        } catch (e) {
-          console.error('加载历史消息失败', e)
-        }
-      } else {
-        if (!abortControllers.has(id)) {
-          try {
-            const res = await getMessages(id)
-            const history = res.data || res || []
-            if (history.length > 0) {
-              sessionCache.value[id] = history
-            }
-          } catch (e) { /* 忽略更新错误 */ }
-        }
-      }
-      scrollToBottom()
-    },
-    { immediate: true }
-)
+function patchMeta(id, patch) {
+  Object.assign(ensureMeta(id), patch, { lastEventAt: Date.now() })
+}
 
 function scrollToBottom() {
   nextTick(() => {
-    if (listRef.value) {
-      listRef.value.scrollTop = listRef.value.scrollHeight
-    }
+    if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight
   })
 }
 
-// 发送消息
-async function send() {
-  const text = input.value.trim()
+watch(() => props.session?.id, async (id) => {
+  if (!id) return
+  ensureMeta(id)
+  if (!sessionCache.value[id]) {
+    sessionCache.value[id] = []
+    try {
+      const res = await getMessages(id)
+      const history = res.data || res || []
+      if (history.length) sessionCache.value[id] = history
+    } catch (error) {
+      patchMeta(id, { status: 'error', statusMessage: 'Unable to load history', error: error.message })
+    }
+  }
+  scrollToBottom()
+}, { immediate: true })
+
+defineExpose({
+  abortSession(id) {
+    abortControllers.get(id)?.abort()
+    abortControllers.delete(id)
+    delete sessionCache.value[id]
+    patchMeta(id, { status: 'cancelled', statusMessage: 'Cancelled by user' })
+  }
+})
+
+async function send(textOverride = null) {
+  const rawText = typeof textOverride === 'string' ? textOverride : input.value
+  const text = typeof rawText === 'string' ? rawText.trim() : ''
   if (!text || loading.value) return
+  const useTaskMode = taskMode.value || text.length > 300
 
-  let currentSessionId = props.session?.id
-
-  if (!currentSessionId) {
+  let sessionId = props.session?.id
+  if (!sessionId) {
     try {
       const created = await createSession()
-      currentSessionId = created.data?.id || created.id
-      emit('created', created.data || created)
-    } catch (e) {
-      alert('创建会话失败：' + (e.message || '未知错误'))
+      const session = created.data || created
+      sessionId = session.id
+      emit('created', session)
+    } catch (error) {
+      alert(`Unable to create session: ${error.message || 'unknown error'}`)
       return
     }
   }
 
-  if (!sessionCache.value[currentSessionId]) {
-    sessionCache.value[currentSessionId] = []
-  }
-
-  sessionCache.value[currentSessionId].push({ role: 'user', content: text })
+  sessionCache.value[sessionId] ||= []
+  sessionCache.value[sessionId].push({ role: 'user', content: text })
   input.value = ''
-  scrollToBottom()
-
-  const uniqueId = 'msg_' + Date.now().toString()
-  sessionCache.value[currentSessionId].push({ role: 'assistant', content: '', _flag: uniqueId })
+  const marker = `msg_${Date.now()}`
+  sessionCache.value[sessionId].push({ role: 'assistant', content: '', _flag: marker })
+  lastRequestBySession.set(sessionId, text)
 
   const controller = new AbortController()
-  abortControllers.set(currentSessionId, controller)
+  abortControllers.set(sessionId, controller)
+  patchMeta(sessionId, {
+    status: 'submitting', statusMessage: 'Submitting request', startedAt: Date.now(),
+    requestId: '', lastEvent: 'request created', error: '', plan: [], step: 0, total: 0
+  })
+  scrollToBottom()
 
+  const target = () => sessionCache.value[sessionId]?.find(item => item._flag === marker)
   try {
     await streamChat({
-      sessionId: currentSessionId,
+      sessionId,
       message: text,
+      taskMode: useTaskMode,
       signal: controller.signal,
-      onToken: (token) => {
-        const targetList = sessionCache.value[currentSessionId]
-        if (targetList) {
-          const targetMsg = targetList.find(m => m._flag === uniqueId)
-          if (targetMsg) targetMsg.content += token
-        }
-        if (props.session?.id === currentSessionId) {
-          scrollToBottom()
-        }
+      onPlan: event => patchMeta(sessionId, {
+        requestId: event.requestId || '', plan: event.steps || [], total: event.total || 0,
+        status: 'planned', statusMessage: 'Plan received'
+      }),
+      onStep: event => patchMeta(sessionId, {
+        step: event.step || 0, total: event.total || 0,
+        status: event.type === 'step_done' ? 'step_done' : 'step_started',
+        statusMessage: event.type === 'step_done' ? `Finished step ${event.step}` : `Starting step ${event.step}: ${event.title}`,
+        lastEvent: event.type
+      }),
+      onStatus: event => patchMeta(sessionId, {
+        status: event.status || 'working', statusMessage: event.message || event.status || 'Working',
+        lastEvent: event.code || event.status || 'status'
+      }),
+      onHeartbeat: () => patchMeta(sessionId, { lastEvent: 'heartbeat', statusMessage: 'Connection is healthy; model is still working' }),
+      onToken: token => {
+        const message = target()
+        if (message) message.content += token
+        patchMeta(sessionId, { status: 'generating', statusMessage: 'Generating content', lastEvent: 'token' })
+        if (props.session?.id === sessionId) scrollToBottom()
       },
-      onDone: () => {
-        const targetList = sessionCache.value[currentSessionId]
-        if (targetList) {
-          const targetMsg = targetList.find(m => m._flag === uniqueId)
-          if (targetMsg && targetMsg.content === '') {
-            targetMsg.content = '（无回复）'
-          }
+      onDone: (finalText) => {
+        const message = target()
+        if (message && typeof finalText === 'string' && finalText) {
+          message.content = finalText
+        } else if (message && !message.content) {
+          message.content = '(No visible answer returned)'
         }
-        abortControllers.delete(currentSessionId)
+        patchMeta(sessionId, { status: 'done', statusMessage: 'Completed', lastEvent: 'done' })
         emit('refreshed')
-      }
+      },
+      onError: error => patchMeta(sessionId, {
+        status: 'error', statusMessage: error.message || 'Generation failed',
+        error: `${error.code || 'UNKNOWN'}: ${error.message || 'unknown error'}`, lastEvent: 'error'
+      })
     })
-  } catch (e) {
-    const targetList = sessionCache.value[currentSessionId]
-    if (targetList) {
-      const targetMsg = targetList.find(m => m._flag === uniqueId)
-      if (targetMsg && e.name !== 'AbortError') {
-        targetMsg.content = '⚠️ ' + (e.message || '对话出错，请稍后重试')
-      }
+  } catch (error) {
+    const message = target()
+    if (message && error.name !== 'AbortError' && !message.content) {
+      message.content = `Error: ${error.message || 'generation failed'}`
     }
+    if (error.name === 'AbortError') patchMeta(sessionId, { status: 'cancelled', statusMessage: 'Cancelled by user' })
   } finally {
-    abortControllers.delete(currentSessionId)
-    if (props.session?.id === currentSessionId) {
+    abortControllers.delete(sessionId)
+    if (props.session?.id === sessionId) {
       scrollToBottom()
       nextTick(() => inputRef.value?.focus())
     }
   }
 }
 
-function handleKeydown(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
+function retry() {
+  const id = props.session?.id
+  const text = id ? lastRequestBySession.get(id) : ''
+  if (text && !loading.value) send(text)
+}
+
+function stop() {
+  const id = props.session?.id
+  abortControllers.get(id)?.abort()
+  abortControllers.delete(id)
+  if (id) patchMeta(id, { status: 'cancelled', statusMessage: 'Stopping generation...' })
+}
+
+function handleKeydown(event) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
     send()
   }
 }
 
-// 主动点击“停止生成”按钮
-function stop() {
-  const id = props.session?.id
-  if (id && abortControllers.has(id)) {
-    abortControllers.get(id).abort()
-    abortControllers.delete(id)
-  }
-}
-
-// 整个组件卸载时
 onBeforeUnmount(() => {
-  if (abortControllers && abortControllers.size > 0) {
-    abortControllers.forEach(controller => controller.abort())
-    abortControllers.clear()
-  }
+  clearInterval(clock)
+  abortControllers.forEach(controller => controller.abort())
 })
 </script>
 
@@ -192,358 +199,53 @@ onBeforeUnmount(() => {
   <main class="chat-window">
     <header class="chat-header">
       <div class="header-left">
-        <span class="header-dot"></span>
-        <span class="header-title">{{ session?.title || '新对话' }}</span>
-      </div>
-      <button v-if="loading" class="btn-stop" @click="stop">■ 停止生成</button>
-    </header>
-
-    <div class="message-list" ref="listRef">
-      <!-- 空状态 -->
-      <div v-if="messages.length === 0" class="empty-state">
-        <div class="empty-logo">AI</div>
-        <h2>你好，我是 AI 助手</h2>
-        <p>支持多轮对话，我会记住上下文，围绕你的话题持续深入回答。</p>
-        <div class="suggest-cards">
-          <button class="suggest-card" @click="input = '帮我写一个 Java 的冒泡排序示例'">
-            <span class="suggest-icon">💻</span> 写一段代码
-          </button>
-          <button class="suggest-card" @click="input = '解释一下什么是 RESTful API，并举例子'">
-            <span class="suggest-icon">📚</span> 解释概念
-          </button>
-          <button class="suggest-card" @click="input = '帮我制定一个学习 Spring Boot 的计划'">
-            <span class="suggest-icon">📝</span> 制定学习计划
-          </button>
+        <span class="header-dot" :class="{ busy: loading, error: currentMeta?.status === 'error' }"></span>
+        <div>
+          <div class="header-title">{{ session?.title || 'New chat' }}</div>
+          <div class="status-line">{{ currentMeta?.statusMessage || 'Ready' }}<span v-if="loading"> · {{ elapsedSeconds }}s</span></div>
         </div>
       </div>
+      <div class="header-actions">
+        <label class="mode-toggle"><input v-model="taskMode" type="checkbox" /> phased task mode (auto for long requests)</label>
+        <button v-if="loading" class="btn-stop" @click="stop">Stop</button>
+        <button v-else-if="currentMeta?.status === 'error' || currentMeta?.status === 'cancelled'" class="btn-retry" @click="retry">Retry</button>
+      </div>
+    </header>
 
-      <!-- 消息列表 -->
-      <div
-          v-for="(m, i) in messages"
-          :key="i"
-          class="message-row"
-          :class="m.role"
-      >
-        <div class="avatar">{{ m.role === 'user' ? '我' : 'AI' }}</div>
+    <section v-if="currentMeta?.plan?.length" class="task-panel">
+      <div class="task-panel-title">Task plan <span>{{ currentMeta.step || 0 }}/{{ currentMeta.total }}</span></div>
+      <ol><li v-for="(step, index) in currentMeta.plan" :key="step" :class="{ active: index + 1 === currentMeta.step, done: index + 1 < currentMeta.step }">{{ step }}</li></ol>
+    </section>
+
+    <div class="message-list" ref="listRef">
+      <div v-if="messages.length === 0" class="empty-state"><div class="empty-logo">AI</div><h2>Ready when you are</h2><p>Ask a question or enable phased task mode for larger implementation requests.</p></div>
+      <div v-for="(message, index) in messages" :key="index" class="message-row" :class="message.role">
+        <div class="avatar">{{ message.role === 'user' ? 'You' : 'AI' }}</div>
         <div class="bubble">
-          <div v-if="m.role === 'assistant' && m.content" class="markdown-body"
-               v-html="renderMarkdown(m.content)"></div>
-          <div v-else-if="m.role === 'assistant' && loading && i === messages.length - 1" class="typing">
-            <span></span><span></span><span></span>
-          </div>
-          <div v-else-if="m.role === 'assistant' && !m.content" class="typing">
-            <span></span><span></span><span></span>
-          </div>
-          <div v-else class="plain-text">{{ m.content }}</div>
+          <div v-if="message.role === 'assistant' && message.content" class="markdown-body" v-html="renderMarkdown(message.content)"></div>
+          <div v-else-if="message.role === 'assistant' && loading && index === messages.length - 1" class="typing"><span></span><span></span><span></span></div>
+          <div v-else class="plain-text">{{ message.content }}</div>
         </div>
       </div>
     </div>
 
+    <details v-if="currentMeta && (loading || currentMeta.requestId || currentMeta.error)" class="diagnostics">
+      <summary>Diagnostics</summary>
+      <div>requestId: <code>{{ currentMeta.requestId || 'waiting for server' }}</code></div>
+      <div>status: {{ currentMeta.status }}</div>
+      <div>last event: {{ currentMeta.lastEvent || 'none' }}</div>
+      <div v-if="currentMeta.lastEventAt">last event at: {{ new Date(currentMeta.lastEventAt).toLocaleTimeString() }}</div>
+      <div v-if="currentMeta.error" class="diagnostic-error">{{ currentMeta.error }}</div>
+    </details>
+
     <footer class="input-area">
-      <div class="input-box">
-        <textarea
-            ref="inputRef"
-            v-model="input"
-            :disabled="loading"
-            rows="1"
-            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-            @keydown="handleKeydown"
-        ></textarea>
-        <button
-            class="send-btn"
-            :disabled="loading || !input.trim()"
-            @click="send"
-        >
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-          </svg>
-        </button>
-      </div>
-      <div class="input-hint">内容由 AI 生成，请注意甄别 · 当前引擎可在后端 application.yml 中配置</div>
+      <div class="input-box"><textarea ref="inputRef" v-model="input" :disabled="loading" rows="1" placeholder="Type a message. Enter sends, Shift+Enter adds a line." @keydown="handleKeydown"></textarea><button class="send-btn" :disabled="loading || !input.trim()" @click="send()">➤</button></div>
+      <div class="input-hint">The app reports connection, model, timeout, and task-step status in real time.</div>
     </footer>
   </main>
 </template>
 
 <style scoped>
-.chat-window {
-  flex: 1;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: #f7f8fa;
-}
-
-.chat-header {
-  height: 60px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-  background: #ffffff;
-  border-bottom: 1px solid #e8eaef;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.header-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #22c55e;
-}
-
-.header-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1f2937;
-}
-
-.btn-stop {
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  color: #ef4444;
-  font-size: 13px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.btn-stop:hover {
-  background: #fef2f2;
-}
-
-.message-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px 20px;
-}
-
-.empty-state {
-  max-width: 520px;
-  margin: 60px auto;
-  text-align: center;
-  color: #6b7280;
-}
-
-.empty-logo {
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 16px;
-  border-radius: 18px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
-  font-size: 24px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3);
-}
-
-.empty-state h2 {
-  margin: 0 0 8px;
-  color: #1f2937;
-  font-size: 22px;
-}
-
-.empty-state p {
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.suggest-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 24px;
-}
-
-.suggest-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  background: #fff;
-  color: #374151;
-  font-size: 14px;
-  text-align: left;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.suggest-card:hover {
-  border-color: #c7d2fe;
-  background: #eef2ff;
-  transform: translateY(-1px);
-}
-
-.suggest-icon {
-  font-size: 18px;
-}
-
-.message-row {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
-  max-width: 820px;
-}
-
-.message-row.user {
-  flex-direction: row-reverse;
-  margin-left: auto;
-}
-
-.avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 600;
-  color: #fff;
-}
-
-.message-row.assistant .avatar {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-}
-
-.message-row.user .avatar {
-  background: #10b981;
-}
-
-.bubble {
-  padding: 12px 16px;
-  border-radius: 14px;
-  font-size: 14px;
-  line-height: 1.7;
-  max-width: 100%;
-  word-break: break-word;
-}
-
-.message-row.assistant .bubble {
-  background: #ffffff;
-  border: 1px solid #e8eaef;
-  border-top-left-radius: 4px;
-  color: #1f2937;
-}
-
-.message-row.user .bubble {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
-  border-top-right-radius: 4px;
-}
-
-.plain-text {
-  white-space: pre-wrap;
-}
-
-.typing {
-  display: inline-flex;
-  gap: 4px;
-  padding: 4px 0;
-}
-
-.typing span {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #a5b4fc;
-  animation: blink 1.2s infinite ease-in-out;
-}
-
-.typing span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.typing span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes blink {
-  0%, 80%, 100% {
-    opacity: 0.3;
-    transform: translateY(0);
-  }
-  40% {
-    opacity: 1;
-    transform: translateY(-3px);
-  }
-}
-
-.input-area {
-  padding: 12px 20px 16px;
-  background: #f7f8fa;
-}
-
-.input-box {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  max-width: 820px;
-  margin: 0 auto;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  padding: 10px 12px;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.input-box:focus-within {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
-}
-
-textarea {
-  flex: 1;
-  border: none;
-  outline: none;
-  resize: none;
-  font-size: 14px;
-  line-height: 1.6;
-  max-height: 120px;
-  font-family: inherit;
-  color: #1f2937;
-  background: transparent;
-}
-
-.send-btn {
-  width: 38px;
-  height: 38px;
-  border: none;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-
-.send-btn:hover:not(:disabled) {
-  transform: scale(1.05);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
-}
-
-.send-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.input-hint {
-  text-align: center;
-  margin-top: 8px;
-  font-size: 12px;
-  color: #b0b4bf;
-}
+.chat-window{flex:1;height:100%;display:flex;flex-direction:column;background:#f7f8fa}.chat-header{min-height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;background:#fff;border-bottom:1px solid #e8eaef}.header-left{display:flex;align-items:center;gap:10px}.header-dot{width:8px;height:8px;border-radius:50%;background:#22c55e}.header-dot.busy{background:#f59e0b}.header-dot.error{background:#ef4444}.header-title{font-size:15px;font-weight:600;color:#1f2937}.status-line{font-size:12px;color:#6b7280;margin-top:3px}.header-actions{display:flex;align-items:center;gap:10px}.mode-toggle{font-size:12px;color:#4b5563}.btn-stop,.btn-retry{border:1px solid #e5e7eb;background:#fff;color:#b42318;font-size:13px;padding:6px 12px;border-radius:6px;cursor:pointer}.btn-retry{color:#2563eb}.task-panel{padding:10px 20px;background:#fff;border-bottom:1px solid #e8eaef}.task-panel-title{font-size:12px;color:#4b5563;display:flex;justify-content:space-between}.task-panel ol{display:flex;gap:8px;list-style:none;padding:8px 0 0;margin:0;overflow:auto}.task-panel li{white-space:nowrap;font-size:12px;color:#9ca3af;padding:5px 8px;border:1px solid #e5e7eb;border-radius:5px}.task-panel li.active{color:#1d4ed8;border-color:#93c5fd;background:#eff6ff}.task-panel li.done{color:#15803d;border-color:#86efac;background:#f0fdf4}.message-list{flex:1;overflow-y:auto;padding:24px 20px}.empty-state{max-width:520px;margin:60px auto;text-align:center;color:#6b7280}.empty-logo{width:64px;height:64px;margin:0 auto 16px;border-radius:18px;background:#4f46e5;color:#fff;font-size:24px;font-weight:700;display:flex;align-items:center;justify-content:center}.empty-state h2{margin:0 0 8px;color:#1f2937;font-size:22px}.empty-state p{font-size:14px;line-height:1.7}.message-row{display:flex;gap:10px;max-width:900px;margin:0 auto 18px}.message-row.user{flex-direction:row-reverse}.avatar{width:30px;height:30px;border-radius:50%;background:#e5e7eb;color:#374151;font-size:10px;display:flex;align-items:center;justify-content:center;flex:none}.message-row.assistant .avatar{background:#4f46e5;color:#fff}.bubble{max-width:78%;padding:11px 14px;border-radius:8px;background:#fff;color:#1f2937;line-height:1.6;box-shadow:0 1px 2px rgba(0,0,0,.04)}.message-row.user .bubble{background:#eef2ff}.plain-text{white-space:pre-wrap}.typing{display:flex;gap:4px;padding:4px}.typing span{width:6px;height:6px;border-radius:50%;background:#9ca3af;animation:blink 1.2s infinite}.typing span:nth-child(2){animation-delay:.15s}.typing span:nth-child(3){animation-delay:.3s}@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}.diagnostics{margin:0 20px 8px;padding:8px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;color:#6b7280;font-size:11px;line-height:1.8}.diagnostics summary{cursor:pointer;color:#374151}.diagnostic-error{color:#b42318}.input-area{padding:12px 20px;background:#fff;border-top:1px solid #e8eaef}.input-box{display:flex;gap:8px;max-width:900px;margin:auto;border:1px solid #d1d5db;border-radius:8px;padding:8px;background:#fff}.input-box textarea{flex:1;border:0;resize:none;outline:0;font:inherit;line-height:1.5}.send-btn{width:36px;border:0;border-radius:6px;background:#4f46e5;color:#fff;cursor:pointer}.send-btn:disabled{opacity:.4;cursor:not-allowed}.input-hint{max-width:900px;margin:6px auto 0;color:#9ca3af;font-size:11px}
+@media (max-width:700px){.header-actions{gap:5px}.mode-toggle{font-size:11px}.task-panel ol{display:block}.task-panel li{display:inline-block;margin:2px}.bubble{max-width:85%}}
 </style>

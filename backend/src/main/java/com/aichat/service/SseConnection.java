@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 
 /** Owns the lifecycle of one SSE response. */
@@ -16,23 +17,48 @@ public final class SseConnection {
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicBoolean disconnected = new AtomicBoolean(false);
     private final AtomicBoolean terminal = new AtomicBoolean(false);
+    private final AtomicReference<Runnable> closeAction = new AtomicReference<>();
 
     public SseConnection(long timeout) {
         this.emitter = new SseEmitter(timeout);
-        emitter.onError(error -> disconnected.set(true));
-        emitter.onTimeout(() -> disconnected.set(true));
-        emitter.onCompletion(() -> disconnected.set(true));
+        emitter.onError(error -> markDisconnected());
+        emitter.onTimeout(this::markDisconnected);
+        emitter.onCompletion(this::markDisconnected);
     }
 
     public SseEmitter emitter() {
         return emitter;
     }
 
+    public String requestId() {
+        return streamId;
+    }
+
     public boolean isClosed() {
         return disconnected.get() || terminal.get();
     }
 
-    public void send(Object data) {
+    /** Cancels the model task when the browser or proxy closes the SSE response. */
+    public void onClose(Runnable action) {
+        closeAction.set(action);
+        if (disconnected.get()) {
+            action.run();
+        }
+    }
+
+    private void markDisconnected() {
+        if (terminal.get()) {
+            return;
+        }
+        if (disconnected.compareAndSet(false, true)) {
+            Runnable action = closeAction.get();
+            if (action != null) {
+                action.run();
+            }
+        }
+    }
+
+    public synchronized void send(Object data) {
         if (isClosed()) {
             throw new ClientDisconnectedException();
         }
@@ -43,12 +69,20 @@ public final class SseConnection {
                     .name("message")
                     .data(data));
         } catch (IOException | IllegalStateException e) {
-            disconnected.set(true);
+            markDisconnected();
             throw new ClientDisconnectedException(e);
         }
     }
 
-    public void complete() {
+    public void sendStatus(String status, String message) {
+        send(Map.of("type", "status", "status", status, "message", message));
+    }
+
+    public void sendHeartbeat() {
+        send(Map.of("type", "heartbeat", "timestamp", System.currentTimeMillis()));
+    }
+
+    public synchronized void complete() {
         if (!terminal.compareAndSet(false, true) || disconnected.get()) {
             return;
         }
@@ -56,12 +90,12 @@ public final class SseConnection {
         try {
             emitter.complete();
         } catch (IllegalStateException e) {
-            disconnected.set(true);
+            markDisconnected();
         }
     }
 
     /** Sends one final error event only while the response is usable. */
-    public void sendError(Throwable error) {
+    public synchronized void sendError(Throwable error) {
         if (disconnected.get() || !terminal.compareAndSet(false, true)) {
             return;
         }
@@ -74,7 +108,7 @@ public final class SseConnection {
                     .data(Map.of("type", "error", "message", message)));
             emitter.complete();
         } catch (IOException | IllegalStateException e) {
-            disconnected.set(true);
+            markDisconnected();
         }
     }
 
