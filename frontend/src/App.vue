@@ -3,13 +3,15 @@ import { ref, computed, watch } from 'vue'
 import Login from './components/Login.vue'
 import SessionList from './components/SessionList.vue'
 import ChatWindow from './components/ChatWindow.vue'
-import { createSession, listSessions } from './api/chat.js' // 👈 确保路径是 ./api
-import { isLogin } from "./utils/auth.js" // 👈 确保路径是 ./utils
+import Settings from './components/Settings.vue'
+import { createSession, listSessions } from './api/chat.js'
+import { isLogin } from "./utils/auth.js"
 
 // 状态定义
 const sessions = ref([])
 const currentId = ref(null)
-const chatWindowRef = ref(null) // 👈 用来获取 ChatWindow 子组件实例
+const chatWindowRef = ref(null)
+const settingsRef = ref(null)
 
 // 监听登录状态，自动拉取或清空数据
 watch(isLogin, async (newVal) => {
@@ -42,7 +44,13 @@ const currentSession = computed(() => {
 async function loadSessions() {
   const res = await listSessions()
   const list = res.data || res
-  sessions.value = Array.isArray(list) ? list : []
+  const backendSessions = Array.isArray(list) ? list : []
+
+  // 保留本地已创建但后端尚未同步的会话（防止 agent 创建的会话被后端数据覆盖后丢失）
+  const backendIds = new Set(backendSessions.map(s => s.id))
+  const localOnly = sessions.value.filter(s => !backendIds.has(s.id))
+
+  sessions.value = [...localOnly, ...backendSessions]
 }
 
 // 主动创建新会话
@@ -86,6 +94,9 @@ async function refresh() {
     currentId.value = sessions.value[0].id
   }
 }
+function openSettings() {
+  settingsRef.value?.open()
+}
 </script>
 
 <template>
@@ -110,6 +121,10 @@ async function refresh() {
         @created="onCreated"
         @refreshed="refresh"
     />
+    <!-- 设置弹窗 -->
+    <Settings ref="settingsRef" />
+    <!-- 设置入口按钮 -->
+    <button class="settings-fab" @click="openSettings" title="工作区授权设置">🔧</button>
   </div>
 </template>
 
@@ -128,5 +143,30 @@ body {
   width: 100vw;
   overflow: hidden;
   background-color: #f7f8fa;
+}
+
+.settings-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+  z-index: 1000;
+  transition: all 0.2s;
+}
+
+.settings-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
 }
 </style>
