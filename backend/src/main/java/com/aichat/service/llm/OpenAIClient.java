@@ -1,8 +1,8 @@
 package com.aichat.service.llm;
 
 import com.aichat.config.LLMProperties;
+import com.aichat.dto.ChatCompletionChunk;
 import com.aichat.model.ChatMessage;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.BufferedReader;
@@ -33,7 +33,9 @@ public class OpenAIClient implements LLMClient {
     public OpenAIClient(LLMProperties props) {
         this.props = props;
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(30))
+                .connectTimeout(Duration.ofSeconds(10))
+                .version(HttpClient.Version.HTTP_1_1) // 明确指定 HTTP 1.1，大多数本地大模型兼容性更好
+                // 不要在这里设置全局读取超时，否则流式吐字慢了会被掐断
                 .build();
     }
 
@@ -53,20 +55,12 @@ public class OpenAIClient implements LLMClient {
 
     @Override
     public void streamChat(List<ChatMessage> messages, Consumer<String> onToken) throws Exception {
-        streamChat(messages, onToken, ignored -> { });
-    }
-
-    @Override
-    public void streamChat(List<ChatMessage> messages,
-                           Consumer<String> onToken,
-                           Consumer<String> onReasoning) throws Exception {
         Map<String, Object> body = buildRequestBody(messages, true);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(props.getBaseUrl() + "/chat/completions"))
                 .header("Authorization", "Bearer " + props.getApiKey())
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(Math.max(10, props.getRequestTimeoutSeconds())))
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
                 .build();
 
@@ -77,11 +71,11 @@ public class OpenAIClient implements LLMClient {
             throw new IOException("大模型接口调用失败，HTTP " + response.statusCode() + "：" + errorBody);
         }
 
-        // 解析 SSE 流：data: {...} \n data: [DONE]
-        try (InputStream responseBody = response.body();
-             BufferedReader reader = new BufferedReader(new InputStreamReader(responseBody, StandardCharsets.UTF_8))) {
+        // 解析 SSE 流
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                System.out.println("【LLM原始返回】：" + line);
                 String trimmed = line.trim();
                 if (!trimmed.startsWith("data:")) {
                     continue;
@@ -93,18 +87,32 @@ public class OpenAIClient implements LLMClient {
                 if ("[DONE]".equals(data)) {
                     break;
                 }
-                JsonNode node = objectMapper.readTree(data);
-                JsonNode deltaNode = node.path("choices").path(0).path("delta");
-                JsonNode reasoning = deltaNode.path("reasoning_content");
-                if (!reasoning.isMissingNode() && !reasoning.isNull() && !reasoning.asText().isEmpty()) {
-                    onReasoning.accept(reasoning.asText());
-                }
-                JsonNode delta = deltaNode.path("content");
-                if (delta != null && !delta.isMissingNode() && !delta.isNull()) {
-                    String text = delta.asText();
-                    if (!text.isEmpty()) {
-                        onToken.accept(text);
+                ChatCompletionChunk chatCompletionChunk = objectMapper.readValue(data, ChatCompletionChunk.class);
+                if (chatCompletionChunk != null) {
+                    ChatCompletionChunk.Choice.Delta delta = chatCompletionChunk.choices().getFirst().delta();
+                    String content = delta.content();
+                    if (!content.isEmpty()) {
+                        onToken.accept(content);
                     }
+                }
+            }
+        } catch (RuntimeException e) {
+            if ("CLIENT_ABORT".equals(e.getMessage())) {
+                System.out.println("检测到前端终止了对话，立刻停止读取大模型，释放连接。");
+                // 【核心修复】：必须将异常继续抛出，否则外层会误以为执行成功，继续发送后续信息导致二次崩溃
+                throw e;
+            } else {
+                throw e; // 继续往外抛
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            // 【修正部分】：原生 HttpClient 只需要关闭 body(InputStream)
+            if (response != null && response.body() != null) {
+                try {
+                    response.body().close();
+                } catch (IOException e) {
+                    // 忽略关闭流时可能抛出的异常
                 }
             }
         }
@@ -115,20 +123,43 @@ public class OpenAIClient implements LLMClient {
         body.put("model", props.getModel());
         body.put("stream", stream);
         body.put("temperature", props.getTemperature());
-        body.put("frequency_penalty", props.getFrequencyPenalty());
-        body.put("presence_penalty", props.getPresencePenalty());
         body.put("max_tokens", props.getMaxTokens());
-        // Qwen-compatible APIs use this field to disable long hidden reasoning.
-        body.put("enable_thinking", props.isEnableThinking());
         body.put("messages", messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .collect(Collectors.toList()));
+        // 👇 核心改造：重新构建要发送给大模型的消息列表
+        List<Map<String, String>> apiMessages = new java.util.ArrayList<>();
+
+        // 1. 如果配置了系统提示词，并且不为空，强制把它作为第一条消息 (role = system)
+        if (props.getSystemPrompt() != null && !props.getSystemPrompt().trim().isEmpty()) {
+            apiMessages.add(Map.of(
+                    "role", "system",
+                    "content", props.getSystemPrompt()
+            ));
+        }
+
+        // 2. 追加用户和助手的历史上下文
+        for (ChatMessage m : messages) {
+            apiMessages.add(Map.of(
+                    "role", m.role(),
+                    "content", m.content()
+            ));
+        }
+
+        // 把拼装好的消息放进请求体中
+        body.put("messages", apiMessages);
         return body;
     }
 
-    private String readAll(InputStream in) throws IOException {
+    // 👇 增加判空和安全的 try-catch，绝不让这里抛出异常打断主流程
+    private String readAll(InputStream in) {
+        if (in == null) {
+            return "【响应体为空 (可能被代理拦截或未返回任何内容)】";
+        }
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
             return reader.lines().collect(Collectors.joining("\n"));
+        } catch (Exception e) {
+            return "【读取响应体异常: " + e.getMessage() + "】";
         }
     }
 }

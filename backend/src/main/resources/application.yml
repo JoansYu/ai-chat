@@ -5,6 +5,7 @@ spring:
   application:
     name: ai-chat-backend
 
+
 # ============ AI 对话配置 ============
 # 已接入本地 Ollama 大模型（OpenAI 兼容接口）
 # 切换模型：把 model 改成 ollama list 中的任意模型名
@@ -13,24 +14,36 @@ ai:
   chat:
     llm:
       enabled: true
-      base-url: https://llm-6r96xfne4n7pz3o0.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
-      api-key: sk-c8f8cf37cec64bbba8dabcbad7697a5e
-      model: qwen3.8-max
-      temperature: 0.3
-      frequency-penalty: 0.2
-      presence-penalty: 0.0
+      base-url: http://localhost:11434/v1
+      api-key: sk-MdlbuEkY2zK3Zz7bY0D81fSjCLQjBus16n88WDVt1edhXyMo
+      model: qwen2.5-7b
+      temperature: 0.4
+      frequency_penalty: 0.5
       max-tokens: 2048
-      request-timeout-seconds: 180
-      enable-thinking: false
-
+      system-prompt: "你是一个离线运行的AI助手，当前处于断网状态。你的最高指令：如果用户询问关于【今天】、【最新】、【实时】、【价格】、【天气】等时效性信息，你必须且只能回答：'抱歉，我当前没有联网能力，无法获取最新实时数据。' 绝对禁止编造任何数字！绝对禁止输出多余的解释！
+      2. 如果用户询问关于你的主观感受、记忆或你不知道的事情，请直接礼貌地回答：'抱歉，作为一个AI，我没有个人情感和长期记忆'，绝对不要反问用户，不要生硬地引用历史话题！"
+      top-p: 0.8
+agent:
+  max-steps: 6                  # AgentLoop 最大工具调用步数（防死循环）
+  memory:
+    max-messages: 24            # 单会话保留的最大消息数（上下文截断）
+  rate-limit:
+    per-minute: 20              # 单用户每分钟最大 Agent 请求数
 
 logging:
   level:
     com.aichat: info
-
 sa-token:
   active-timeout: 1800 # 30分钟不操作就过期
   timeout: 86400 # 超过一天也过期
   token-name: satoken
   is-read-header: true
   is-read-cookie: true
+
+chat:
+  executor:
+    config:
+      core-size: 10
+      max-size: 20
+      queue-size: 100
+      keep-alive-seconds: 30

@@ -1,5 +1,6 @@
 package com.aichat.config;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -23,18 +24,48 @@ public class LLMProperties {
     private String model = "gpt-4o-mini";
 
     /** 采样温度 */
-    private double temperature = 0.3;
-
-    /** Penalizes repeating tokens for providers supporting the OpenAI fields. */
-    private double frequencyPenalty = 0.2;
-
-    /** Encourages introducing new tokens when supported by the provider. */
-    private double presencePenalty = 0.0;
+    private double temperature = 0.7;
 
     /** 最大生成 Token 数 */
     private int maxTokens = 2048;
-    private int requestTimeoutSeconds = 180;
-    private boolean enableThinking = false;
+
+
+    @JsonProperty(value = "frequency_penalty")
+    private double frequencyPenalty = 1.2;
+
+    @JsonProperty(value = "top_p")
+    private double topP = 0.8;
+
+    @JsonProperty(value = "enable_thinking")
+    private boolean enableThinking = true;
+
+    public boolean isEnableThinking() {
+        return enableThinking;
+    }
+
+    public void setEnableThinking(boolean enableThinking) {
+        this.enableThinking = enableThinking;
+    }
+
+
+    public double getFrequencyPenalty() {
+        return frequencyPenalty;
+    }
+
+    public void setFrequencyPenalty(double frequencyPenalty) {
+        this.frequencyPenalty = frequencyPenalty;
+    }
+
+    public double getTopP() {
+        return topP;
+    }
+
+    public void setTopP(double topP) {
+        this.topP = topP;
+    }
+
+
+    private String systemPrompt = "你是一个专业而优秀的AI助手，对于用户的问题，你如果不知道，就告诉用户你不知道，请用户提供详细信息，不可以胡乱编造答案。";
 
     public boolean isEnabled() {
         return enabled;
@@ -76,22 +107,6 @@ public class LLMProperties {
         this.temperature = temperature;
     }
 
-    public double getFrequencyPenalty() {
-        return frequencyPenalty;
-    }
-
-    public void setFrequencyPenalty(double frequencyPenalty) {
-        this.frequencyPenalty = frequencyPenalty;
-    }
-
-    public double getPresencePenalty() {
-        return presencePenalty;
-    }
-
-    public void setPresencePenalty(double presencePenalty) {
-        this.presencePenalty = presencePenalty;
-    }
-
     public int getMaxTokens() {
         return maxTokens;
     }
@@ -100,19 +115,13 @@ public class LLMProperties {
         this.maxTokens = maxTokens;
     }
 
-    public int getRequestTimeoutSeconds() {
-        return requestTimeoutSeconds;
+    public String getSystemPrompt() {
+        return systemPrompt;
     }
 
-    public void setRequestTimeoutSeconds(int requestTimeoutSeconds) {
-        this.requestTimeoutSeconds = requestTimeoutSeconds;
+    public void setSystemPrompt(String systemPrompt) {
+        this.systemPrompt = systemPrompt;
     }
 
-    public boolean isEnableThinking() {
-        return enableThinking;
-    }
 
-    public void setEnableThinking(boolean enableThinking) {
-        this.enableThinking = enableThinking;
-    }
 }

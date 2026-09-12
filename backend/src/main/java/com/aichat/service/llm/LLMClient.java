@@ -28,10 +28,4 @@ public interface LLMClient {
      * @param onToken  每个增量内容回调
      */
     void streamChat(List<ChatMessage> messages, Consumer<String> onToken) throws Exception;
-
-    default void streamChat(List<ChatMessage> messages,
-                            Consumer<String> onToken,
-                            Consumer<String> onReasoning) throws Exception {
-        streamChat(messages, onToken);
-    }
 }
