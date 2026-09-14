@@ -88,7 +88,7 @@ public class AgentModelClient {
                 ));
             }
         }
-        return new AgentMessage(role, content, tcs, null);
+        return new AgentMessage(role, content, tcs, null, null);
 
     }
 

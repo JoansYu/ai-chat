@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -51,6 +52,11 @@ public class GlobalExceptionHandler {
         writeJsonToResponse(response, HttpStatus.NOT_FOUND.value(), 404, e.getMessage());
     }
 
+    @ExceptionHandler(BusinessException.class)
+    public void handleBusiness(BusinessException e, HttpServletResponse response) throws IOException {
+        writeJsonToResponse(response, HttpStatus.BAD_REQUEST.value(), 400, e.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public void handleValidation(MethodArgumentNotValidException e, HttpServletResponse response) throws IOException {
         String message = e.getBindingResult().getFieldErrors().stream()
@@ -58,6 +64,36 @@ public class GlobalExceptionHandler {
                 .map(fe -> fe.getDefaultMessage())
                 .orElse("参数校验失败");
         writeJsonToResponse(response, HttpStatus.BAD_REQUEST.value(), 400, message);
+    }
+
+    @ExceptionHandler(ClientAbortException.class)
+    public void handleClientAbort(ClientAbortException e, HttpServletResponse response) {
+        // 前端主动断开连接，正常现象，静默处理即可
+        log.info("客户端断开连接（ClientAbort），忽略: {}", e.getMessage());
+        if (!response.isCommitted()) {
+            response.setStatus(HttpStatus.OK.value());
+        }
+    }
+
+    @ExceptionHandler(IOException.class)
+    public void handleIOException(IOException e, HttpServletResponse response) {
+        String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
+        // 客户端断开导致的连接中止/Broken pipe 等，属于 SSE 断连的正常现象，静默处理
+        if (msg.contains("中止") || msg.contains("broken pipe")
+                || msg.contains("connection reset") || msg.contains("connection aborted")
+                || msg.contains("connection is closed")) {
+            log.info("客户端连接中断（SSE），忽略: {}", e.getMessage());
+            if (!response.isCommitted()) {
+                response.setStatus(HttpStatus.OK.value());
+            }
+            return;
+        }
+        log.error("IO 异常", e);
+        try {
+            writeJsonToResponse(response, HttpStatus.INTERNAL_SERVER_ERROR.value(), 500, "服务器内部错误：" + e.getMessage());
+        } catch (IOException ioEx) {
+            log.error("写入 IO 错误响应失败，连接可能已断开", ioEx);
+        }
     }
 
     @ExceptionHandler(Exception.class)

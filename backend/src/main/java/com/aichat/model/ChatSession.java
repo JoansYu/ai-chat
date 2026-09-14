@@ -3,26 +3,32 @@ package com.aichat.model;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * 对话会话（内存存储），保存多轮消息历史
+ * 对话会话领域对象（不可变，数据从 DB 加载）
  */
 public class ChatSession {
 
     private final String id;
-    private String title;
+    private final String title;
     private final long createdAt;
-    private final CopyOnWriteArrayList<ChatMessage> messages = new CopyOnWriteArrayList<>();
+    private final int messageCount;
+    private final List<ChatMessage> messages;
 
-    public ChatSession(String id) {
+    public ChatSession(String id, String title, long createdAt, List<ChatMessage> messages) {
         this.id = id;
-        this.title = "新会话";
-        this.createdAt = System.currentTimeMillis();
+        this.title = title;
+        this.createdAt = createdAt;
+        this.messages = messages != null ? new ArrayList<>(messages) : new ArrayList<>();
+        this.messageCount = this.messages.size();
     }
 
-    public void appendMessage(ChatMessage message) {
-        messages.add(message);
+    public ChatSession(String id, String title, long createdAt, int messageCount) {
+        this.id = id;
+        this.title = title;
+        this.createdAt = createdAt;
+        this.messageCount = messageCount;
+        this.messages = new ArrayList<>();
     }
 
     public String getId() {
@@ -33,29 +39,22 @@ public class ChatSession {
         return title;
     }
 
-    public void setTitle(String title) {
-        this.title = title;
-    }
-
     public long getCreatedAt() {
         return createdAt;
     }
 
     public int getMessageCount() {
-        return messages.size();
+        return messageCount;
     }
 
     public boolean isEmpty() {
-        return messages.isEmpty();
+        return messageCount == 0;
     }
 
     public List<ChatMessage> getMessages() {
-        return Collections.unmodifiableList(new ArrayList<>(messages));
+        return Collections.unmodifiableList(messages);
     }
 
-    /**
-     * 获取最近 N 条消息，用于作为多轮上下文发送给 LLM
-     */
     public List<ChatMessage> getRecentMessages(int n) {
         int size = messages.size();
         int from = Math.max(0, size - n);

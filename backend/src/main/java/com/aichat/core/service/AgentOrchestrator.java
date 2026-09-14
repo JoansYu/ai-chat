@@ -36,7 +36,7 @@ public class AgentOrchestrator {
     public String chat(String userInput, AgentContext ctx) {
         List<AgentMessage> messages = memory.load(ctx);
 
-        IntentType intent = intentClassifier.analyze(userInput, messages, ctx.workspacePath(), ctx.userToken());
+        IntentType intent = intentClassifier.analyze(userInput, messages);
         System.out.println("🎯 [AgentOrchestrator] 识别到当前意图: " + intent);
 
         try {
@@ -86,7 +86,7 @@ public class AgentOrchestrator {
     public String streamChat(String userInput, AgentContext ctx, Consumer<Map<String, Object>> onEvent) {
         List<AgentMessage> messages = memory.load(ctx);
 
-        IntentType intent = intentClassifier.analyze(userInput, messages, ctx.workspacePath(), ctx.userToken());
+        IntentType intent = intentClassifier.analyze(userInput, messages);
         System.out.println("🎯 [AgentOrchestrator-Stream] 识别到当前意图: " + intent);
 
         try {
