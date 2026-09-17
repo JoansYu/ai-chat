@@ -96,6 +96,8 @@ public class AgentPythonClient {
                                    Consumer<Map<String, Object>> onEvent) {
         try {
             String bodyJson = buildRequestBody(request, workspacePath, userToken);
+            log.info("📤 转发 Python Stream 请求: user_input={}, history条数={}, 目标={}",
+                    request.userInput(), request.history() != null ? request.history().size() : 0, pythonUrl);
 
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(pythonUrl + "/api/v1/agent/stream"))

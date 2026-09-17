@@ -7,8 +7,8 @@ from tools import TOOLS_SCHEMA, TOOLS_ROUTER
 # 初始化OpenAI客户端
 
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY", "sk-MdlbuEkY2zK3Zz7bY0D81fSjCLQjBus16n88WDVt1edhXyMo"),
-    base_url=os.getenv("OPENAI_BASE_URL", "http://models.ascend.huawei.com/v1")
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL")
 )
 
 
@@ -24,7 +24,7 @@ def run_agent_loop(input_messages: List[Dict[str, Any]], max_steps: int = 5) -> 
     for step in range(max_steps):
         print(f"🤖 [AgentEngine] Step {step + 1} 思考中...")
         response = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "deepseek-v4-flash"),
+            model=os.getenv("OPENAI_MODEL"),
             messages=messages,
             tools=TOOLS_SCHEMA,
             temperature=0.2

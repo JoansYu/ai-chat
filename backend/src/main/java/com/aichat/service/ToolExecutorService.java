@@ -56,6 +56,12 @@ public class ToolExecutorService {
             case "list_directory" -> listDirectory(workspace, strArg(args, "path", "."));
             case "search_code" -> searchCode(workspace, strArg(args, "pattern"), strArg(args, "path", "."));
             case "glob_files" -> globFiles(workspace, strArg(args, "pattern"), strArg(args, "path", "."));
+            case "write_file" -> writeFile(workspace, strArg(args, "path"), strArg(args, "content"));
+            case "edit_file" -> editFile(workspace, strArg(args, "path"), strArg(args, "old_string"), strArg(args, "new_string"));
+            case "delete_file" -> deleteFile(workspace, strArg(args, "path"));
+            case "create_directory" -> createDirectory(workspace, strArg(args, "path"));
+            case "move_file" -> moveFile(workspace, strArg(args, "old_path"), strArg(args, "new_path"));
+            case "get_file_info" -> getFileInfo(workspace, strArg(args, "path"));
             default -> "未知工具: " + tool;
         };
     }
@@ -259,6 +265,138 @@ public class ToolExecutorService {
             return "沙箱拦截：" + e.getMessage();
         } catch (IOException e) {
             return "文件匹配异常：" + e.getMessage();
+        }
+    }
+
+    // ====================================================
+    // 写操作工具（新增）
+    // ====================================================
+
+    private String writeFile(String workspace, String path, String content) {
+        if (path == null || path.isBlank()) return "错误：path 参数不能为空";
+        if (content == null) content = "";
+        if (content.length() > MAX_FILE_SIZE) return "错误：内容过大，最大 " + MAX_FILE_SIZE + " bytes";
+        try {
+            Path target = validatePath(workspace, path);
+            if (!isAllowedExtension(target)) return "错误：不支持的文件类型";
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, content, StandardCharsets.UTF_8);
+            return "✅ 文件已写入: " + path + " (" + content.length() + " 字符)";
+        } catch (BusinessException e) {
+            return "沙箱拦截：" + e.getMessage();
+        } catch (IOException e) {
+            return "写入文件异常：" + e.getMessage();
+        }
+    }
+
+    private String editFile(String workspace, String path, String oldString, String newString) {
+        if (path == null || path.isBlank()) return "错误：path 参数不能为空";
+        if (oldString == null || oldString.isBlank()) return "错误：old_string 参数不能为空";
+        if (newString == null) newString = "";
+        try {
+            Path target = validatePath(workspace, path);
+            if (!Files.isRegularFile(target)) return "错误：文件不存在 - " + path;
+            if (!isAllowedExtension(target)) return "错误：不支持的文件类型";
+            if (Files.size(target) > MAX_FILE_SIZE) return "错误：文件过大";
+
+            String content = Files.readString(target, StandardCharsets.UTF_8);
+            if (!content.contains(oldString)) return "错误：未找到要替换的内容（old_string 不匹配）";
+
+            int count = content.split(java.util.regex.Pattern.quote(oldString), -1).length - 1;
+            if (count > 1) return "错误：old_string 在文件中出现了 " + count + " 次，请提供更长的上下文";
+
+            String updated = content.replace(oldString, newString);
+            Files.writeString(target, updated, StandardCharsets.UTF_8);
+            return "✅ 文件已修改: " + path + " (替换了 " + oldString.length() + " → " + newString.length() + " 字符)";
+        } catch (BusinessException e) {
+            return "沙箱拦截：" + e.getMessage();
+        } catch (IOException e) {
+            return "编辑文件异常：" + e.getMessage();
+        }
+    }
+
+    private String deleteFile(String workspace, String path) {
+        if (path == null || path.isBlank()) return "错误：path 参数不能为空";
+        try {
+            Path target = validatePath(workspace, path);
+            if (!Files.exists(target)) return "错误：文件或目录不存在 - " + path;
+
+            Path base = Path.of(workspace).toAbsolutePath().normalize();
+            if (target.equals(base)) return "错误：禁止删除工作区根目录";
+
+            if (Files.isDirectory(target)) {
+                try (Stream<Path> walk = Files.walk(target)) {
+                    walk.sorted(java.util.Comparator.reverseOrder())
+                            .forEach(p -> { try { Files.delete(p); } catch (IOException ignored) {} });
+                }
+                return "✅ 目录已删除: " + path;
+            } else {
+                Files.delete(target);
+                return "✅ 文件已删除: " + path;
+            }
+        } catch (BusinessException e) {
+            return "沙箱拦截：" + e.getMessage();
+        } catch (IOException e) {
+            return "删除文件异常：" + e.getMessage();
+        }
+    }
+
+    private String createDirectory(String workspace, String path) {
+        if (path == null || path.isBlank()) return "错误：path 参数不能为空";
+        try {
+            Path target = validatePath(workspace, path);
+            Files.createDirectories(target);
+            return "✅ 目录已创建: " + path;
+        } catch (BusinessException e) {
+            return "沙箱拦截：" + e.getMessage();
+        } catch (IOException e) {
+            return "创建目录异常：" + e.getMessage();
+        }
+    }
+
+    private String moveFile(String workspace, String oldPath, String newPath) {
+        if (oldPath == null || oldPath.isBlank()) return "错误：old_path 参数不能为空";
+        if (newPath == null || newPath.isBlank()) return "错误：new_path 参数不能为空";
+        try {
+            Path source = validatePath(workspace, oldPath);
+            Path dest = validatePath(workspace, newPath);
+            if (!Files.exists(source)) return "错误：源文件不存在 - " + oldPath;
+            Files.createDirectories(dest.getParent());
+            Files.move(source, dest, StandardCopyOption.REPLACE_EXISTING);
+            return "✅ 已移动: " + oldPath + " → " + newPath;
+        } catch (BusinessException e) {
+            return "沙箱拦截：" + e.getMessage();
+        } catch (IOException e) {
+            return "移动文件异常：" + e.getMessage();
+        }
+    }
+
+    private String getFileInfo(String workspace, String path) {
+        if (path == null || path.isBlank()) return "错误：path 参数不能为空";
+        try {
+            Path target = validatePath(workspace, path);
+            if (!Files.exists(target)) return "错误：文件不存在 - " + path;
+
+            java.nio.file.attribute.BasicFileAttributes attrs =
+                    Files.readAttributes(target, java.nio.file.attribute.BasicFileAttributes.class);
+            java.time.format.DateTimeFormatter fmt =
+                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                            .withZone(java.time.ZoneId.systemDefault());
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("路径: ").append(path).append("\n");
+            sb.append("类型: ").append(attrs.isDirectory() ? "目录" : "文件").append("\n");
+            sb.append("大小: ").append(attrs.size()).append(" bytes\n");
+            sb.append("创建时间: ").append(fmt.format(attrs.creationTime().toInstant())).append("\n");
+            sb.append("修改时间: ").append(fmt.format(attrs.lastModifiedTime().toInstant())).append("\n");
+            if (!attrs.isDirectory()) {
+                sb.append("扩展名: ").append(isAllowedExtension(target) ? "允许" : "不在白名单").append("\n");
+            }
+            return sb.toString();
+        } catch (BusinessException e) {
+            return "沙箱拦截：" + e.getMessage();
+        } catch (IOException e) {
+            return "获取文件信息异常：" + e.getMessage();
         }
     }
 }

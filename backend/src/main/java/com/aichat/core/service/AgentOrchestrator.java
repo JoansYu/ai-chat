@@ -1,9 +1,6 @@
 package com.aichat.core.service;
 
-
-import com.aichat.core.Planner;
 import com.aichat.core.client.AgentPythonClient;
-import com.aichat.core.enums.IntentType;
 import com.aichat.dto.AgentPythonRequest;
 import com.aichat.dto.AgentPythonResponse;
 import com.aichat.exception.ClientAbortException;
@@ -12,62 +9,43 @@ import com.aichat.model.AgentContext;
 import com.aichat.model.AgentMessage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.util.CollectionUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * 总装，任务编排
+ * Agent 编排服务（重构后：意图识别 + 规划已迁移到 Python，Java 只负责记忆加载 + 转发 + 记忆保存）
  */
 @Service
 @RequiredArgsConstructor
 public class AgentOrchestrator {
 
-    private final IntentClassifier intentClassifier;
-
-    private final Planner planner;
-
     private final AgentPythonClient client;
-
     private final MemoryManager memory;
 
     public String chat(String userInput, AgentContext ctx) {
-        List<AgentMessage> messages = memory.load(ctx);
-
-        IntentType intent = intentClassifier.analyze(userInput, messages);
-        System.out.println("🎯 [AgentOrchestrator] 识别到当前意图: " + intent);
+        List<AgentMessage> history = memory.load(ctx);
 
         try {
-            String answer;
-
-            if (intent == IntentType.CHAT) {
-                messages.add(AgentMessage.user(userInput));
-            }
-            else if (intent == IntentType.TASK_NEW || intent == IntentType.UNKNOWN || CollectionUtils.isEmpty(messages)) {
-                String plan = planner.generatePlan(userInput);
-                System.out.println("📝 [Planner] 生成的全局计划:\n" + plan);
-                messages = planner.buildExecutionMessage(userInput, plan, ctx, memory.loadProfile(ctx));
-            }
-            else {
-                messages.add(AgentMessage.user(userInput));
-            }
-
-            AgentPythonResponse response = client.executeAgent(AgentPythonRequest.of(messages), ctx.workspacePath(), ctx.userToken());
+            AgentPythonResponse response = client.executeAgent(
+                    AgentPythonRequest.of(userInput, history), ctx.workspacePath(), ctx.userToken());
 
             if (!"success".equals(response.status())) {
                 throw new RuntimeException("Python Agent 执行异常: " + response.errorMessage());
             }
 
-            messages = response.messages();
-            answer = response.finalAnswer();
-
+            String answer = response.finalAnswer();
             if (response.usage() != null) {
-                System.out.println("📊 本次 Agent 节点 Token 消耗: " + response.usage().totalTokens());
+                System.out.println("📊 Token 消耗: " + response.usage().totalTokens());
             }
 
-            memory.save(ctx, messages);
+            // Java 自行构建历史（不依赖 Python 回传 messages，避免字段不匹配导致记忆丢失）
+            List<AgentMessage> finalMessages = new ArrayList<>(history);
+            finalMessages.add(AgentMessage.user(userInput));
+            finalMessages.add(AgentMessage.assistant(answer, response.usage()));
+            memory.save(ctx, finalMessages);
             return answer;
 
         } catch (Exception e) {
@@ -77,63 +55,50 @@ public class AgentOrchestrator {
 
     /**
      * 流式 Agent 对话
-     *
-     * @param userInput 用户输入
-     * @param ctx       上下文
-     * @param onEvent   SSE 事件回调，参数为事件 Map（含 type/content/name/arguments 等）
-     * @return 完整回复文本
+     * 重构后：Java 只加载历史 → 传给 Python（Python 内部做意图识别+规划+执行）→ 保存结果
      */
     public String streamChat(String userInput, AgentContext ctx, Consumer<Map<String, Object>> onEvent) {
-        List<AgentMessage> messages = memory.load(ctx);
-
-        IntentType intent = intentClassifier.analyze(userInput, messages);
-        System.out.println("🎯 [AgentOrchestrator-Stream] 识别到当前意图: " + intent);
+        List<AgentMessage> history = memory.load(ctx);
+        System.out.println("🎯 [Orchestrator-Stream] 用户输入: " + userInput);
+        System.out.println("🎯 [Orchestrator-Stream] 历史消息数: " + history.size()
+                + (history.isEmpty() ? " (无历史)" : ""));
+        if (!history.isEmpty()) {
+            for (AgentMessage m : history) {
+                System.out.println("🎯 [Orchestrator-Stream]   历史[" + m.role() + "]: "
+                        + (m.content() == null ? "" : m.content().substring(0, Math.min(60, m.content().length()))));
+            }
+        }
 
         try {
-            if (intent == IntentType.CHAT) {
-                messages.add(AgentMessage.user(userInput));
-            } else if (intent == IntentType.TASK_NEW || intent == IntentType.UNKNOWN || CollectionUtils.isEmpty(messages)) {
-                String plan = planner.generatePlan(userInput);
-                System.out.println("📝 [Planner] 生成的全局计划:\n" + plan);
-                messages = planner.buildExecutionMessage(userInput, plan, ctx, memory.loadProfile(ctx));
-            } else {
-                messages.add(AgentMessage.user(userInput));
-            }
-
             final StringBuilder fullAnswer = new StringBuilder();
-            final List<AgentMessage> finalMessages = messages;
 
-            client.streamExecuteAgent(AgentPythonRequest.of(messages), ctx.workspacePath(), ctx.userToken(), event -> {
-                String type = (String) event.get("type");
-                if ("token".equals(type)) {
-                    fullAnswer.append(event.get("content"));
-                }
-                onEvent.accept(event);
+            client.streamExecuteAgent(
+                    AgentPythonRequest.of(userInput, history),
+                    ctx.workspacePath(), ctx.userToken(),
+                    event -> {
+                        String type = (String) event.get("type");
+                        if ("token".equals(type)) {
+                            fullAnswer.append(event.get("content"));
+                        }
+                        onEvent.accept(event);
+                    });
 
-                if ("done".equals(type)) {
-                    Object msgs = event.get("messages");
-                    if (msgs instanceof List<?> list && !list.isEmpty()) {
-                        try {
-                            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-                            finalMessages.clear();
-                            for (Object item : list) {
-                                finalMessages.add(om.convertValue(item, AgentMessage.class));
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                }
-            });
-
+            // Java 自行构建历史：history + 本轮 user + assistant 回复
+            // （不依赖 Python 回传 messages 反序列化——Python 消息含 tool_call_id/name/tool_calls
+            //   等字段与 AgentMessage 不匹配，曾导致历史保存为空、下一轮失忆）
+            List<AgentMessage> finalMessages = new ArrayList<>(history);
+            finalMessages.add(AgentMessage.user(userInput));
+            finalMessages.add(AgentMessage.assistant(fullAnswer.toString(), null));
             memory.save(ctx, finalMessages);
+            System.out.println("✅ [Orchestrator-Stream] 回复长度=" + fullAnswer.length()
+                    + ", 已保存历史条数=" + finalMessages.size());
+
             return fullAnswer.toString();
 
         } catch (ClientAbortException e) {
-            // 前端已断开连接，原样透传，禁止包装
             throw e;
         } catch (Exception e) {
             throw new RuntimeException("Agent 流式调度执行异常", e);
         }
     }
-
-
 }

@@ -12,6 +12,7 @@ import com.aichat.model.ChatSession;
 import com.aichat.service.SessionService;
 import com.aichat.service.WorkspaceService;
 import jakarta.validation.constraints.NotBlank;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;

@@ -5,6 +5,29 @@ spring:
   application:
     name: ai-chat-backend
 
+  # ============================================================
+  # MySQL 数据源配置
+  # 【必填】请将下方 TODO 占位符替换为你的真实 MySQL 连接信息
+  #   TODO_HOST     → MySQL 服务器 IP（本机填 localhost）
+  #   TODO_PORT     → MySQL 端口（默认 3306）
+  #   TODO_USERNAME → 数据库用户名（如 root）
+  #   TODO_PASSWORD → 数据库密码
+  # 建库脚本见 src/main/resources/db/schema.sql
+  # ============================================================
+  datasource:
+    url: jdbc:mysql://101.34.56.179:3306/ai_chat?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: yuqiong@1993
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+# MyBatis-Plus 配置
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+
 
 # ============ AI 对话配置 ============
 # 已接入本地 Ollama 大模型（OpenAI 兼容接口）
@@ -16,7 +39,7 @@ ai:
       enabled: true
       base-url: http://localhost:11434/v1
       api-key: sk-MdlbuEkY2zK3Zz7bY0D81fSjCLQjBus16n88WDVt1edhXyMo
-      model: qwen2.5-7b
+      model: deepseek-v4-flash
       temperature: 0.4
       frequency_penalty: 0.5
       max-tokens: 2048
@@ -24,11 +47,13 @@ ai:
       2. 如果用户询问关于你的主观感受、记忆或你不知道的事情，请直接礼貌地回答：'抱歉，作为一个AI，我没有个人情感和长期记忆'，绝对不要反问用户，不要生硬地引用历史话题！"
       top-p: 0.8
 agent:
-  max-steps: 6                  # AgentLoop 最大工具调用步数（防死循环）
+  # AgentLoop 最大工具调用步数（防死循环）
   memory:
     max-messages: 24            # 单会话保留的最大消息数（上下文截断）
   rate-limit:
     per-minute: 20              # 单用户每分钟最大 Agent 请求数
+  python:
+    url: http://7.192.34.148:8000
 
 logging:
   level:
