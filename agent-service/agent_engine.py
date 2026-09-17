@@ -6,8 +6,8 @@ from tools import LOCAL_TOOLS_SCHEMA, LOCAL_TOOLS_ROUTER
 from mcp_manager import mcp_manager
 
 client = AsyncOpenAI(
-    api_key=os.getenv("OPENAI_API_KEY", "sk-MdlbuEkY2zK3Zz7bY0D81fSjCLQjBus16n88WDVt1edhXyMo"),
-    base_url=os.getenv("OPENAI_BASE_URL", "http://models.ascend.huawei.com/v1")
+    api_key=os.getenv("OPENAI_API_KEY", "sk-c8f8cf37cec64bbba8dabcbad7697a5e"),
+    base_url=os.getenv("OPENAI_BASE_URL", "https://llm-6r96xfne4n7pz3o0.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")
 )
 
 
@@ -191,7 +191,7 @@ async def run_agent_loop(input_messages: List[Dict[str, Any]], max_steps: int, c
     for step in range(max_steps):
         print(f"🤖 [AgentEngine] Step {step + 1} 思考中...")
         response = await client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "deepseek-v4-flash"),
+            model=os.getenv("OPENAI_MODEL", "qwen3.8-max"),
             messages=messages,
             tools=combined_tools,
             temperature=0.2
