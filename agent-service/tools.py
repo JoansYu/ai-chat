@@ -1,25 +1,28 @@
 import json
+import logging
 import httpx
 import datetime
+
+logger = logging.getLogger("agent-service.tools")
 
 
 # ====================================================
 # 异步基础工具
 # ====================================================
 async def get_weather(location: str, ctx: dict) -> str:
-    print(f"[Tools] 正在查询天气: {location}")
+    logger.info(f"查询天气: {location}")
     return json.dumps({"location": location, "weather": "Sunny", "temperature": "25C"})
 
 
 async def get_current_time(ctx: dict) -> str:
-    print("[Tools] 获取系统时间")
+    logger.info("获取系统时间")
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     beijing_now = utc_now + datetime.timedelta(hours=8)
     return f"{beijing_now.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)"
 
 
 # ====================================================
-# Java 回调工具 (保留兼容，转为异步)
+# Java 回调工具
 # ====================================================
 async def _call_java_tool_async(tool_name: str, args: dict, ctx: dict) -> str:
     callback_url = ctx.get("java_callback_url", "")
@@ -47,7 +50,6 @@ async def _call_java_tool_async(tool_name: str, args: dict, ctx: dict) -> str:
         return f"回调 Java 异常: {str(e)}"
 
 
-# Java 提供的高级搜索能力保留
 async def search_code(pattern: str, path: str = ".", ctx: dict = None) -> str:
     return await _call_java_tool_async("search_code", {"pattern": pattern, "path": path}, ctx)
 
@@ -57,7 +59,7 @@ async def glob_files(pattern: str, path: str = ".", ctx: dict = None) -> str:
 
 
 # ====================================================
-# 声明本地 Schema (注意：read_file 等基础文件操作将由 MCP 提供，无需在此声明)
+# 本地工具 Schema 声明
 # ====================================================
 LOCAL_TOOLS_SCHEMA = [
     {
@@ -73,10 +75,7 @@ LOCAL_TOOLS_SCHEMA = [
         "function": {
             "name": "get_current_time",
             "description": "获取当前系统时间",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
+            "parameters": {"type": "object", "properties": {}}
         }
     },
     {
@@ -84,6 +83,15 @@ LOCAL_TOOLS_SCHEMA = [
         "function": {
             "name": "search_code",
             "description": "正则搜索代码内容",
+            "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}},
+                           "required": ["pattern"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "glob_files",
+            "description": "按文件名模式匹配查找文件",
             "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}},
                            "required": ["pattern"]}
         }

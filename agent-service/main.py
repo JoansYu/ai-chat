@@ -1,79 +1,88 @@
-from flask import Flask, request, jsonify, Response
-from agent_engine import run_agent_loop, run_agent_loop_stream
 import json
-import os
+import logging
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+from contextlib import asynccontextmanager
 
-app = Flask(__name__)
-
-
-def _setup_workspace(data):
-    """从请求体中提取 workspace_root、java_callback_url、user_token 并设为环境变量"""
-    workspace = data.get("workspace_root", "")
-    callback_url = data.get("java_callback_url", "")
-    user_token = data.get("user_token", "")
-
-    os.environ["WORKSPACE_ROOT"] = workspace
-    os.environ["JAVA_CALLBACK_URL"] = callback_url
-    os.environ["USER_TOKEN"] = user_token
-
-    if workspace:
-        print(f"📁 [Workspace] 已设置授权工作区: {workspace}")
-    if callback_url:
-        print(f"🔗 [Callback] Java 回调地址: {callback_url}")
-    if user_token:
-        print(f"🔑 [Auth] 用户 Token 已注入")
+from config import logger, DEFAULT_WORKSPACE, HOST, PORT, DEFAULT_MAX_STEPS
+from mcp_manager import mcp_manager
+from agent_graph import run_langgraph_agent, run_langgraph_agent_stream
 
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({"status": "UP", "service": "Python Agent Engine"})
+# 生命周期管理：启动时自动连接 MCP，停止时优雅断开
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await mcp_manager.start(DEFAULT_WORKSPACE)
+    yield
+    await mcp_manager.stop()
 
 
-@app.route('/api/v1/agent/chat', methods=['POST'])
-def agent_chat():
-    """供Java调度的核心 API 接口（非流式）"""
-    data = request.get_json() or {}
-    _setup_workspace(data)
-    messages = data.get("messages", [])
-    max_steps = data.get("max_steps", 5)
+app = FastAPI(lifespan=lifespan)
 
-    if not messages:
-        return jsonify({"status": "error", "message": "message 不能为空"}), 200
+
+class ChatRequest(BaseModel):
+    user_input: str
+    history: List[Dict[str, Any]] = []
+    workspace_root: Optional[str] = ""
+    java_callback_url: Optional[str] = ""
+    user_token: Optional[str] = ""
+    max_steps: Optional[int] = DEFAULT_MAX_STEPS
+
+
+@app.get("/health")
+async def health():
+    return {"status": "UP", "service": "FastAPI + LangGraph + MCP Agent Engine"}
+
+
+@app.post("/api/v1/agent/chat")
+async def agent_chat(req: ChatRequest):
+    if not req.user_input:
+        return {"status": "error", "message": "user_input 不能为空"}
+
+    ctx = {
+        "workspace_root": req.workspace_root,
+        "java_callback_url": req.java_callback_url,
+        "user_token": req.user_token
+    }
+
     try:
-        result = run_agent_loop(input_messages=messages, max_steps=max_steps)
-        return jsonify(result), 200
+        result = await run_langgraph_agent(req.user_input, req.history, ctx, req.max_steps)
+        return result
     except Exception as e:
-        print(f"❌ [Error] 执行过程抛出异常: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": f"Agent 执行异常: {str(e)}"
-        }), 500
+        logger.error(f"❌ [Chat] 异常: {e}")
+        return {"status": "error", "message": f"Agent 执行异常: {str(e)}"}
 
 
-@app.route('/api/v1/agent/stream', methods=['POST'])
-def agent_stream():
-    """流式 Agent 接口（SSE）"""
-    data = request.get_json() or {}
-    _setup_workspace(data)
-    messages = data.get("messages", [])
-    max_steps = data.get("max_steps", 5)
+@app.post("/api/v1/agent/stream")
+async def agent_stream(req: ChatRequest):
+    ctx = {
+        "workspace_root": req.workspace_root,
+        "java_callback_url": req.java_callback_url,
+        "user_token": req.user_token
+    }
+    logger.info(f"📥 [Stream] user_input={req.user_input!r}")
 
-    if not messages:
-        return jsonify({"status": "error", "message": "message 不能为空"}), 200
-
-    def generate():
+    async def event_generator():
         try:
-            for event in run_agent_loop_stream(input_messages=messages, max_steps=max_steps):
+            event_count = 0
+            async for event in run_langgraph_agent_stream(req.user_input, req.history, ctx, req.max_steps):
+                event_count += 1
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            error_event = {"type": "error", "message": f"Agent 执行异常: {str(e)}"}
-            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
 
-    return Response(generate(), mimetype='text/event-stream',
-                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+            logger.info(f"✅ [Stream] 完成, 共推送 {event_count} 个事件")
+        except Exception as e:
+            logger.error(f"❌ [Stream] 异常: {e}")
+            err = {"type": "error", "message": f"Agent 执行异常: {str(e)}"}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    })
 
 
 if __name__ == '__main__':
-    print("🚀 Agent Engine Started on http://0.0.0.0:8000")
-    app.run(host='0.0.0.0', port=8000, debug=True, threaded=True)
-
+    import uvicorn
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
