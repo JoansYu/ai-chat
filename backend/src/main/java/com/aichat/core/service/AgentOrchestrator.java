@@ -33,7 +33,11 @@ public class AgentOrchestrator {
                     AgentPythonRequest.of(userInput, history), ctx.workspacePath(), ctx.userToken());
 
             if (!"success".equals(response.status())) {
-                throw new RuntimeException("Python Agent 执行异常: " + response.errorMessage());
+                String detail = response.errorMessage();
+                if (detail == null || detail.isBlank()) {
+                    detail = response.finalAnswer();
+                }
+                throw new RuntimeException("Python Agent 执行异常: " + detail);
             }
 
             String answer = response.finalAnswer();
