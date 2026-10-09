@@ -11,12 +11,13 @@ import com.intellij.openapi.ui.Messages
 class ToggleConnectionAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
-        when (AiChatConnectionService.getState()) {
-            AiChatConnectionService.State.CONNECTED -> AiChatConnectionService.disconnect()
+        val connection = AiChatConnectionService.getInstance(e.project ?: return)
+        when (connection.getState()) {
+            AiChatConnectionService.State.CONNECTED -> connection.disconnect()
             AiChatConnectionService.State.CONNECTING -> {
                 Messages.showInfoMessage("正在连接中，请稍候...", "AI Chat")
             }
-            else -> AiChatConnectionService.connect(
+            else -> connection.connect(
                 onSuccess = {},
                 onError = { msg -> Messages.showErrorDialog(e.project, msg, "AI Chat 连接失败") }
             )
@@ -24,7 +25,8 @@ class ToggleConnectionAction : AnAction() {
     }
 
     override fun update(e: AnActionEvent) {
-        val connected = AiChatConnectionService.getState() == AiChatConnectionService.State.CONNECTED
+        e.presentation.isEnabled = e.project != null
+        val connected = e.project?.let { AiChatConnectionService.getInstance(it).getState() } == AiChatConnectionService.State.CONNECTED
         e.presentation.text = if (connected) "AI Chat: Disconnect" else "AI Chat: Connect"
     }
 }

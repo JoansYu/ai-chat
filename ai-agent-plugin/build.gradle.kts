@@ -29,6 +29,9 @@ kotlin {
 
 intellijPlatform {
     buildSearchableOptions = false
+    // Kotlin emits null checks itself; this plugin has no GUI Designer .form files.
+    // Avoid the Ant instrumentation JDK-layout dependency (e.g. missing Packages on MS JDK 21).
+    instrumentCode = false
 
     pluginConfiguration {
         version = "0.1.0"
@@ -49,4 +52,9 @@ dependencies {
         bundledPlugin("com.intellij.java")
         testFramework(TestFrameworkType.Platform)
     }
+}
+
+// Only load this plugin and its Java dependency in the test sandbox.
+tasks.test {
+    systemProperty("idea.load.plugins.id", "com.github.joansyu.aiagentplugin,com.intellij.java")
 }

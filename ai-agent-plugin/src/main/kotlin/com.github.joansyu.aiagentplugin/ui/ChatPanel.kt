@@ -49,11 +49,13 @@ import javax.swing.text.html.HTMLEditorKit
  *  │  └────────────┘                       │
  *  │                                      │
  *  ├──────────────────────────────────────┤
- *  │ INPUT: [textarea...........] [Send]  │
+ *  │ INPUT: [textarea ...........] [Send]  │
  *  │        Ctrl+Enter to send            │
  *  └──────────────────────────────────────┘
  */
-class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
+class ChatPanel(private val project: Project) : JPanel(BorderLayout()), com.intellij.openapi.Disposable {
+
+    private val connection = AiChatConnectionService.getInstance(project)
 
     private data class SessionInfo(val id: String, val title: String) {
         override fun toString(): String = title
@@ -105,7 +107,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val stopButton = JButton("停止").apply {
         isEnabled = false
     }
-    private val hintLabel = JBLabel("Ctrl+Enter 发送").apply {
+    private val hintLabel = JBLabel("项目：${project.name} · Ctrl+Enter 发送").apply {
         foreground = JBColor.GRAY
         font = font.deriveFont(font.size2D - 2f)
         horizontalAlignment = SwingConstants.RIGHT
@@ -117,13 +119,20 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
     @Volatile private var currentAssistantBubble: MessageBubble? = null
     @Volatile private var currentAssistantText = StringBuilder()
 
+    private val stateListener = AiChatConnectionService.StateListener { state, message ->
+        if (!project.isDisposed) updateConnectionState(state, message)
+    }
+
+    override fun dispose() {
+        cancelled.set(true)
+        connection.removeListener(stateListener)
+    }
+
     init {
         buildUi()
         wireEvents()
-        AiChatConnectionService.addListener { state, message ->
-            SwingUtilities.invokeLater { updateConnectionState(state, message) }
-        }
-        updateConnectionState(AiChatConnectionService.getState(), null)
+        connection.addListener(stateListener)
+        updateConnectionState(connection.getState(), null)
     }
 
     // ===================== UI 构建 =====================
@@ -149,7 +158,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
         val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
             isOpaque = false
-            add(createIconButton("连接", AllIcons.Actions.Execute) { AiChatConnectionService.connect() })
+            add(createIconButton("连接", AllIcons.Actions.Execute) { connection.connect() })
             add(Box.createHorizontalStrut(4))
             add(statusDot)
             add(statusText)
@@ -207,7 +216,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         })
         sessionBox.addActionListener {
             val s = sessionBox.selectedItem as? SessionInfo ?: return@addActionListener
-            loadHistory(s.id)
+            if (!sending.get()) loadHistory(s.id)
         }
     }
 
@@ -255,16 +264,16 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
     // ===================== 会话管理 =====================
 
     private fun withBackend(action: (BackendClient, String) -> Unit) {
-        val client = AiChatConnectionService.getBackendClient() ?: run {
+        val client = connection.getBackendClient() ?: run {
             showStatusError("请先连接")
             return
         }
-        val tk = AiChatConnectionService.getToken()
+        val tk = connection.getToken()
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 action(client, tk)
             } catch (e: UnauthorizedException) {
-                AiChatConnectionService.handleUnauthorized()
+                connection.handleUnauthorized()
                 SwingUtilities.invokeLater { showStatusError("登录已过期，请重新连接") }
             } catch (e: Exception) {
                 thisLogger().warn("会话操作失败", e)
@@ -281,6 +290,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun refreshSessions() {
+        if (sending.get()) return
         withBackend { client, token ->
             val data = client.listSessions(token)
             val sessions = ArrayList<SessionInfo>()
@@ -318,6 +328,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun createSession() {
+        if (sending.get()) return
         withBackend { client, token ->
             val id = client.createSession(token)
             SwingUtilities.invokeLater {
@@ -353,12 +364,16 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun send() {
         val text = inputArea.text.trim()
-        if (text.isEmpty()) return
-        val client = AiChatConnectionService.getBackendClient() ?: run {
+        if (text.isEmpty() || sending.get()) return
+        if (!connection.isWebSocketConnected()) {
+            showStatusError("项目工具连接已断开，请重新连接")
+            return
+        }
+        val client = connection.getBackendClient() ?: run {
             showStatusError("请先连接")
             return
         }
-        val token = AiChatConnectionService.getToken()
+        val token = connection.getToken()
         val session = sessionBox.selectedItem as? SessionInfo
 
         // 如果当前显示空提示，先清掉
@@ -371,6 +386,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         inputArea.text = ""
         sending.set(true)
+        sessionBox.isEnabled = false
         cancelled.set(false)
         sendButton.isEnabled = false
         stopButton.isEnabled = true
@@ -385,7 +401,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
             try {
                 client.agentChat(token, session?.id, text, ::onEvent) { cancelled.get() }
             } catch (e: UnauthorizedException) {
-                AiChatConnectionService.handleUnauthorized()
+                connection.handleUnauthorized()
                 onEvent(JsonObject().apply {
                     addProperty("type", "error")
                     addProperty("message", "登录已过期，请重新连接")
@@ -399,7 +415,8 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
             } finally {
                 SwingUtilities.invokeLater {
                     sending.set(false)
-                    sendButton.isEnabled = AiChatConnectionService.getState() ==
+                    sessionBox.isEnabled = true
+                    sendButton.isEnabled = connection.getState() ==
                             AiChatConnectionService.State.CONNECTED
                     stopButton.isEnabled = false
                     hintLabel.text = "Ctrl+Enter 发送"
@@ -438,6 +455,10 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
                     refreshMessages()
                 }
                 "done" -> {
+                    val sessionId = evt.get("sessionId")?.asString
+                    if (!sessionId.isNullOrBlank() && sessionBox.selectedItem == null) {
+                        sessionBox.addItem(SessionInfo(sessionId, "当前项目会话"))
+                    }
                     val content = evt.get("content")?.asString
                     if (content != null && content.isNotBlank()) {
                         currentAssistantText = StringBuilder(content)

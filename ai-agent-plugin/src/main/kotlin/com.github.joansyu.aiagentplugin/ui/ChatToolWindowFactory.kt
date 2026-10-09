@@ -14,6 +14,7 @@ class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
         val panel = ChatPanel(project)
         val content = com.intellij.ui.content.ContentFactory.getInstance()
             .createContent(panel, null, false)
+        content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)
     }
 

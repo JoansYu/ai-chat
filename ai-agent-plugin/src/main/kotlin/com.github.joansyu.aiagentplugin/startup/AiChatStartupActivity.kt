@@ -17,7 +17,7 @@ class AiChatStartupActivity : ProjectActivity {
             settings.serverUrl.isNotBlank() &&
             settings.username.isNotBlank()) {
             thisLogger().info("AI Chat 自动连接已启用，开始连接...")
-            AiChatConnectionService.connect()
+            AiChatConnectionService.getInstance(project).connect()
         }
     }
 }

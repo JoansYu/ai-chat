@@ -8,8 +8,8 @@ import com.intellij.openapi.components.Storage
 import com.intellij.util.xmlb.XmlSerializerUtil
 
 /**
- * 插件持久化配置：后端地址、账号、工作区路径、运行时 token。
- * 对应原 local-agent-client 的 application.yml 配置项。
+ * 插件持久化配置：后端地址、账号和自动连接选项。
+ * 工作区不属于配置项；每个连接都从所属 IDEA Project 的 basePath 获取。
  */
 @Service(Service.Level.APP)
 @State(name = "com.github.joansyu.aiagentplugin.settings.AiChatSettings", storages = [Storage("ai-chat-agent.xml")])
@@ -18,9 +18,6 @@ class AiChatSettings : PersistentStateComponent<AiChatSettings> {
     var serverUrl: String = "http://localhost:8080"
     var username: String = ""
     var password: String = ""
-    var workspacePath: String = ""
-    var token: String = ""
-
     /** 是否自动连接（IDE 启动时） */
     var autoConnect: Boolean = false
 

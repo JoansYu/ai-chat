@@ -16,7 +16,6 @@ class AiChatConfigurable : Configurable {
     private val serverUrlField = JBTextField()
     private val usernameField = JBTextField()
     private val passwordField = JBPasswordField()
-    private val workspacePathField = JBTextField()
     private val autoConnectBox = JBCheckBox("启动 IDE 时自动连接后端")
 
     override fun getDisplayName(): String = "AI Chat Agent"
@@ -29,8 +28,7 @@ class AiChatConfigurable : Configurable {
             })
             .addLabeledComponent("用户名", usernameField, 1, false)
             .addLabeledComponent("密码", passwordField, 1, false)
-            .addLabeledComponent("工作区路径", workspacePathField, 1, false)
-            .addComponent(JBLabel("授权给 Agent 的本地代码根目录（沙箱白名单）").apply {
+            .addComponent(JBLabel("代码工作区自动绑定当前 IDEA 项目；多项目独立连接，无需填写路径").apply {
                 font = font.deriveFont(font.size2D - 2f)
             })
             .addComponent(autoConnectBox)
@@ -43,7 +41,6 @@ class AiChatConfigurable : Configurable {
         return s.serverUrl != serverUrlField.text ||
                 s.username != usernameField.text ||
                 String(passwordField.password) != s.password ||
-                s.workspacePath != workspacePathField.text ||
                 s.autoConnect != autoConnectBox.isSelected
     }
 
@@ -52,7 +49,6 @@ class AiChatConfigurable : Configurable {
         s.serverUrl = serverUrlField.text.trim()
         s.username = usernameField.text.trim()
         s.password = String(passwordField.password)
-        s.workspacePath = workspacePathField.text.trim()
         s.autoConnect = autoConnectBox.isSelected
     }
 
@@ -61,7 +57,6 @@ class AiChatConfigurable : Configurable {
         serverUrlField.text = s.serverUrl
         usernameField.text = s.username
         passwordField.text = s.password
-        workspacePathField.text = s.workspacePath
         autoConnectBox.isSelected = s.autoConnect
     }
 }

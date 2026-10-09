@@ -12,7 +12,7 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /**
- * 后端 HTTP 客户端：封装登录、工作区授权、会话管理（同步接口）。
+ * 后端 HTTP 客户端：封装登录、会话管理（同步接口）。
  * SSE 流式对话见 [agentChat] —— 直接在该方法内解析 text/event-stream。
  *
  * 后端约定：
@@ -21,7 +21,7 @@ import java.time.Duration
  *  - 会话 GET/POST/DELETE /api/sessions
  *  - Agent 流式 POST /api/agent/chat (text/event-stream)
  */
-class BackendClient(private val serverUrl: String) {
+class BackendClient(private val serverUrl: String, private val clientId: String) {
 
     private val gson: Gson = Gson()
     private val http: HttpClient = HttpClient.newBuilder()
@@ -39,12 +39,6 @@ class BackendClient(private val serverUrl: String) {
             throw RuntimeException("登录失败，响应: $resp")
         }
         return token
-    }
-
-    /** 授权工作区 */
-    fun authorizeWorkspace(token: String, workspacePath: String) {
-        val body = gson.toJson(mapOf("workspacePath" to workspacePath))
-        send("/api/workspace/authorize", "POST", token, body)
     }
 
     /** 会话列表，返回原始 JsonElement（结构由后端决定） */
@@ -89,7 +83,7 @@ class BackendClient(private val serverUrl: String) {
         isCancelled: () -> Boolean
     ) {
         val reqBody = gson.toJson(
-            mapOf("sessionId" to (sessionId ?: ""), "message" to message)
+            mapOf("sessionId" to (sessionId ?: ""), "message" to message, "clientId" to clientId)
         )
         val req = HttpRequest.newBuilder()
             .uri(URI.create(serverUrl + "/api/agent/chat"))

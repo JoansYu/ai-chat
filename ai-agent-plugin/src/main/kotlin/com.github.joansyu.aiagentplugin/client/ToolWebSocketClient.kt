@@ -21,7 +21,7 @@ import java.util.concurrent.CompletionStage
  *
  * 后台执行工具（避免阻塞 WS 接收），结果异步发回。
  */
-class ToolWebSocketClient(private val executor: IdeToolExecutor = IdeToolExecutor()) {
+class ToolWebSocketClient(private val executor: IdeToolExecutor, private val onDisconnected: () -> Unit) {
 
     private val gson = Gson()
     private val httpClient = HttpClient.newHttpClient()
@@ -30,22 +30,24 @@ class ToolWebSocketClient(private val executor: IdeToolExecutor = IdeToolExecuto
 
     fun isConnected(): Boolean = connected
 
-    /** 连接后端 WS，阻塞直到握手完成或失败 */
-    fun connect(serverUrl: String, token: String) {
+    /** Connect the tool channel for one IDEA project root, blocking until the handshake completes. */
+    fun connect(serverUrl: String, token: String, clientId: String, projectRoot: String) {
         disconnect()
+        fun encode(value: String) = java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8)
         val wsUrl = serverUrl
             .replace("http://", "ws://")
             .replace("https://", "wss://")
             .trimEnd('/')
-            .plus("/ws/agent-tools?token=$token")
+            .plus("/ws/agent-tools?token=${encode(token)}&clientId=${encode(clientId)}&workspace=${encode(projectRoot)}")
 
-        thisLogger().info("AI Chat WebSocket 正在连接: $wsUrl")
+        thisLogger().info("AI Chat WebSocket 正在连接当前项目")
         val future: CompletableFuture<WebSocket> = httpClient.newWebSocketBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .buildAsync(URI.create(wsUrl), WsListener())
 
         webSocket = future.get(15, java.util.concurrent.TimeUnit.SECONDS)
-        connected = true
+        connected = webSocket?.isInputClosed == false && webSocket?.isOutputClosed == false
+        check(connected) { "项目工具连接已被服务端关闭" }
         thisLogger().info("AI Chat WebSocket 已连接")
     }
 
@@ -59,12 +61,14 @@ class ToolWebSocketClient(private val executor: IdeToolExecutor = IdeToolExecuto
 
     /** 在后台线程执行工具，避免阻塞 WS 接收线程 */
     private fun executeAndReply(ws: WebSocket, requestId: String, tool: String, args: Map<String, Any?>) {
-        CompletableFuture.runAsync {
+        com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread {
+            if (ws !== webSocket || !connected) return@executeOnPooledThread
             var result = ""
             var error = false
             try {
-                thisLogger().info("📥 收到工具请求: requestId=$requestId tool=$tool args=$args")
+                thisLogger().info("📥 收到工具请求: requestId=$requestId tool=$tool ")
                 result = executor.execute(tool, args)
+                error = result.startsWith("错误") || result.startsWith("沙箱拦截") || result.contains("异常:") || result.startsWith("未知工具")
                 thisLogger().info("📤 工具执行完成: requestId=$requestId tool=$tool")
             } catch (e: Exception) {
                 result = e.message ?: "工具执行异常"
@@ -77,7 +81,7 @@ class ToolWebSocketClient(private val executor: IdeToolExecutor = IdeToolExecuto
                 addProperty("error", error)
             }
             try {
-                ws.sendText(gson.toJson(resp), true).get()
+                synchronized(ws) { ws.sendText(gson.toJson(resp), true).get(10, java.util.concurrent.TimeUnit.SECONDS) }
             } catch (e: Exception) {
                 thisLogger().warn("回传工具结果失败: $requestId", e)
             }
@@ -104,13 +108,19 @@ class ToolWebSocketClient(private val executor: IdeToolExecutor = IdeToolExecuto
         }
 
         override fun onClose(webSocket: WebSocket, statusCode: Int, reason: String): CompletionStage<*>? {
-            connected = false
+            if (webSocket === this@ToolWebSocketClient.webSocket) {
+                connected = false
+                onDisconnected()
+            }
             thisLogger().warn("AI Chat WebSocket 关闭: code=$statusCode reason=$reason")
             return null
         }
 
         override fun onError(webSocket: WebSocket, error: Throwable) {
-            connected = false
+            if (webSocket === this@ToolWebSocketClient.webSocket) {
+                connected = false
+                onDisconnected()
+            }
             thisLogger().warn("AI Chat WebSocket 错误", error)
         }
 
