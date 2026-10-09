@@ -205,9 +205,19 @@ async def run_langgraph_agent_stream(
 
             if kind == "on_chat_model_stream":
                 chunk = event["data"]["chunk"]
-                if chunk.content:
-                    full_answer += chunk.content
-                    yield {"type": "token", "content": chunk.content}
+                content = chunk.content
+                # 新版 langchain-core 的 content 可能是内容块列表（如 [{"type":"text","text":"你"}]），需兼容 str/list
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            parts.append(part.get("text", "") or "")
+                        else:
+                            parts.append(str(part))
+                    content = "".join(parts)
+                if content:
+                    full_answer += content
+                    yield {"type": "token", "content": content}
 
             elif kind == "on_tool_start":
                 tool_name = event["name"]

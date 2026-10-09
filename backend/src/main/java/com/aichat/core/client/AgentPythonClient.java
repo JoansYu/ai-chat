@@ -3,6 +3,7 @@ package com.aichat.core.client;
 import com.aichat.dto.AgentPythonRequest;
 import com.aichat.dto.AgentPythonResponse;
 import com.aichat.exception.ClientAbortException;
+import com.aichat.model.AgentMessage;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -21,6 +22,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
@@ -44,6 +48,9 @@ public class AgentPythonClient {
                 .build();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
+                // 强制 HTTP/1.1：JDK HttpClient 默认尝试 HTTP/2 h2c 明文升级，
+                // uvicorn/FastAPI 不支持 h2c，升级过程中请求体丢失导致 422 body missing
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
         this.javaCallbackUrl = resolveCallbackUrl(callbackUrl, serverPort);
     }
@@ -69,10 +76,36 @@ public class AgentPythonClient {
      */
     private String buildRequestBody(AgentPythonRequest request, String workspacePath, String userToken) throws Exception {
         Map<String, Object> body = objectMapper.convertValue(request, Map.class);
+        // history 清洗为标准 OpenAI 消息格式，避免 toolCalls/toolCallId/usage 等多余字段污染 Python 端
+        body.put("history", sanitizeHistory(request.history()));
         body.put("workspace_root", workspacePath != null ? workspacePath : "");
         body.put("java_callback_url", javaCallbackUrl);
         body.put("user_token", userToken != null ? userToken : "");
         return objectMapper.writeValueAsString(body);
+    }
+
+    /**
+     * 将 Java 的 AgentMessage 历史转换为 Python/OpenAI 标准消息格式：
+     *   普通消息: {"role","content"}
+     *   tool消息: {"role":"tool","tool_call_id","name","content"}
+     */
+    private List<Map<String, Object>> sanitizeHistory(List<AgentMessage> history) {
+        List<Map<String, Object>> clean = new ArrayList<>();
+        if (history == null) return clean;
+        for (AgentMessage m : history) {
+            if (m == null || m.role() == null) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("role", m.role());
+            item.put("content", m.content() != null ? m.content() : "");
+            if ("tool".equals(m.role())) {
+                if (m.toolCallId() != null) {
+                    item.put("tool_call_id", m.toolCallId());
+                }
+                item.put("name", "");
+            }
+            clean.add(item);
+        }
+        return clean;
     }
 
     public AgentPythonResponse executeAgent(AgentPythonRequest request, String workspacePath, String userToken) {
@@ -98,6 +131,7 @@ public class AgentPythonClient {
             String bodyJson = buildRequestBody(request, workspacePath, userToken);
             log.info("📤 转发 Python Stream 请求: user_input={}, history条数={}, 目标={}",
                     request.userInput(), request.history() != null ? request.history().size() : 0, pythonUrl);
+            log.info("📤 请求体: {}", bodyJson);
 
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(pythonUrl + "/api/v1/agent/stream"))
@@ -110,7 +144,12 @@ public class AgentPythonClient {
                     HttpResponse.BodyHandlers.ofInputStream());
 
             if (response.statusCode() != 200) {
-                throw new RuntimeException("Python Agent 流式接口返回 HTTP " + response.statusCode());
+                String errBody = "";
+                try {
+                    errBody = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+                } catch (Exception ignored) {}
+                log.error("Python Agent 流式接口返回 HTTP {}，响应体: {}", response.statusCode(), errBody);
+                throw new RuntimeException("Python Agent 流式接口返回 HTTP " + response.statusCode() + ": " + errBody);
             }
 
             try (BufferedReader reader = new BufferedReader(

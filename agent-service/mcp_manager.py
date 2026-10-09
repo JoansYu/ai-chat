@@ -36,7 +36,7 @@ class GlobalMCPManager:
                 "function": {
                     "name": t.name,
                     "description": t.description,
-                    "parameters": t.input_schema
+                    "parameters": getattr(t, "inputSchema", getattr(t, "input_schema", {}))
                 }
             } for t in tools_resp.tools]
             self.mcp_tool_names = {t.name for t in tools_resp.tools}

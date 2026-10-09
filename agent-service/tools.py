@@ -59,6 +59,28 @@ async def glob_files(pattern: str, path: str = ".", ctx: dict = None) -> str:
 
 
 # ====================================================
+# 项目阅读工具（由 IDE 侧 PSI 实现）
+# ====================================================
+async def read_project_structure(path: str = ".", ctx: dict = None) -> str:
+    return await _call_java_tool_async("read_project_structure", {"path": path}, ctx)
+
+
+async def get_symbol_info(symbol: str, ctx: dict = None) -> str:
+    return await _call_java_tool_async("get_symbol_info", {"symbol": symbol}, ctx)
+
+
+async def find_usages(symbol: str, ctx: dict = None) -> str:
+    return await _call_java_tool_async("find_usages", {"symbol": symbol}, ctx)
+
+
+async def read_file_region(path: str, startLine: int = 1, endLine: int = None, ctx: dict = None) -> str:
+    args = {"path": path, "startLine": startLine}
+    if endLine is not None:
+        args["endLine"] = endLine
+    return await _call_java_tool_async("read_file_region", args, ctx)
+
+
+# ====================================================
 # 本地工具 Schema 声明
 # ====================================================
 LOCAL_TOOLS_SCHEMA = [
@@ -95,6 +117,44 @@ LOCAL_TOOLS_SCHEMA = [
             "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}},
                            "required": ["pattern"]}
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_project_structure",
+            "description": "查看项目目录结构，并展示代码文件内的类与方法概览。适合定位项目组织、快速了解有哪些模块。",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "相对工作区的目录路径，默认 '.'"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_symbol_info",
+            "description": "查询符号（类名或方法名/字段名）的定义位置、签名、方法列表与继承关系。适合了解某个类或方法在哪里定义。",
+            "parameters": {"type": "object", "properties": {"symbol": {"type": "string", "description": "类名或方法名/字段名"}},
+                           "required": ["symbol"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_usages",
+            "description": "查找某个符号（方法/类/字段）在项目中的所有引用位置。重构或修改前先调用此工具评估影响范围。",
+            "parameters": {"type": "object", "properties": {"symbol": {"type": "string", "description": "方法名/类名/字段名"}},
+                           "required": ["symbol"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file_region",
+            "description": "按行号区间读取大文件的一部分，避免整文件读取占用过多上下文。",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string", "description": "相对工作区的文件路径"},
+                "startLine": {"type": "integer", "description": "起始行号（含），默认 1"},
+                "endLine": {"type": "integer", "description": "结束行号（含），默认到文件末尾"}
+            }, "required": ["path"]}
+        }
     }
 ]
 
@@ -102,5 +162,9 @@ LOCAL_TOOLS_ROUTER = {
     "get_weather": get_weather,
     "get_current_time": get_current_time,
     "search_code": search_code,
-    "glob_files": glob_files
+    "glob_files": glob_files,
+    "read_project_structure": read_project_structure,
+    "get_symbol_info": get_symbol_info,
+    "find_usages": find_usages,
+    "read_file_region": read_file_region
 }
