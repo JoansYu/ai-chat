@@ -17,10 +17,15 @@ public record AgentPythonRequest(
         List<AgentMessage> history,
 
         @JsonProperty("max_steps")
-        int maxSteps
+        int maxSteps,
+
+        @JsonProperty("client_id") String clientId
 ) {
 
     public static AgentPythonRequest of(String userInput, List<AgentMessage> history) {
-        return new AgentPythonRequest(userInput, history, 10);
+        return of(userInput, history, null);
+    }
+    public static AgentPythonRequest of(String userInput, List<AgentMessage> history, String clientId) {
+        return new AgentPythonRequest(userInput, history, 30, clientId);
     }
 }

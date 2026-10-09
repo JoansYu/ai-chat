@@ -3,136 +3,122 @@ package com.aichat.websocket;
 import cn.dev33.satoken.stp.StpUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
-
-import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.Comparator;
+import java.util.UUID;
+import java.util.concurrent.*;
 
-/**
- * Agent 工具执行 WebSocket Handler（服务器端）
- * 按 userId 管理本地客户端连接，接收工具执行结果并完成 CompletableFuture
- */
+/** Routes by authenticated user AND IDE project connection, never by the last connected window. */
 @Component
 public class AgentToolWebSocketHandler extends TextWebSocketHandler {
-
-    private static final Logger log = LoggerFactory.getLogger(AgentToolWebSocketHandler.class);
-    private final ObjectMapper om = new ObjectMapper();
-
-    /** userId → WebSocket Session */
-    private final Map<Long, WebSocketSession> userSessions = new ConcurrentHashMap<>();
-    /** requestId → CompletableFuture（等待本地客户端返回工具执行结果） */
-    private final Map<String, CompletableFuture<String>> pendingRequests = new ConcurrentHashMap<>();
+    public record ProjectWorkspace(String clientId, String workspacePath) {}
+    private record Key(Long userId, String clientId) {}
+    private record Client(WebSocketSession session, String workspace) {}
+    private record Pending(WebSocketSession owner, CompletableFuture<String> future) {}
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final Map<Key, Client> clients = new ConcurrentHashMap<>();
+    private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 
     @Override
-    public void afterConnectionEstablished(WebSocketSession session) {
-        Long userId = extractUserId(session);
-        if (userId == null) {
-            log.warn("WebSocket 连接未携带有效 token，关闭");
-            try { session.close(CloseStatus.NOT_ACCEPTABLE); } catch (Exception ignored) {}
-            return;
+    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        try {
+            session.setTextMessageSizeLimit(2 * 1024 * 1024);
+            Map<String, String> query = new java.util.HashMap<>();
+            String raw = session.getUri() == null ? null : session.getUri().getRawQuery();
+            if (raw != null) for (String part : raw.split("&")) {
+                String[] pair = part.split("=", 2);
+                if (pair.length == 2) query.put(pair[0], URLDecoder.decode(pair[1], StandardCharsets.UTF_8));
+            }
+            Object loginId = StpUtil.getLoginIdByToken(query.get("token"));
+            if (loginId == null) throw new IllegalArgumentException("未登录");
+            String clientId = query.getOrDefault("clientId", "");
+            String workspace = query.getOrDefault("workspace", "");
+            if (clientId.isBlank() || clientId.length() > 128 || workspace.isBlank()) throw new IllegalArgumentException("无效项目连接");
+            Key key = new Key(Long.valueOf(loginId.toString()), clientId);
+            session.getAttributes().put("agentKey", key);
+            Client previous = clients.put(key, new Client(session, workspace));
+            if (previous != null) previous.session().close(CloseStatus.NORMAL);
+        } catch (Exception e) {
+            session.close(CloseStatus.NOT_ACCEPTABLE);
         }
-        userSessions.put(userId, session);
-        log.info("本地客户端已连接: userId={}, sessionId={}", userId, session.getId());
     }
 
     @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
-        try {
-            JsonNode node = om.readTree(message.getPayload());
-            String requestId = node.path("requestId").asText();
-            String result = node.path("result").asText("");
-            boolean error = node.path("error").asBoolean(false);
-
-            CompletableFuture<String> future = pendingRequests.remove(requestId);
-            if (future != null) {
-                if (error) {
-                    future.complete("工具执行错误: " + result);
-                } else {
-                    future.complete(result);
-                }
-            }
-        } catch (Exception e) {
-            log.error("解析 WebSocket 消息异常", e);
-        }
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+        JsonNode node = mapper.readTree(message.getPayload());
+        String id = node.path("requestId").asText();
+        Pending request = pending.get(id);
+        if (request == null || request.owner() != session || !pending.remove(id, request)) return;
+        request.future().complete((node.path("error").asBoolean() ? "工具执行错误: " : "") + node.path("result").asText());
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        Long userId = extractUserId(session);
-        if (userId != null) {
-            userSessions.remove(userId);
-            log.info("本地客户端已断开: userId={}, status={}", userId, status);
-        }
+        Object key = session.getAttributes().get("agentKey");
+        if (key instanceof Key k) clients.computeIfPresent(k, (ignored, client) -> client.session() == session ? null : client);
+        pending.forEach((id, request) -> {
+            if (request.owner() == session && pending.remove(id, request)) request.future().completeExceptionally(new IllegalStateException("IDE 项目连接已断开"));
+        });
     }
 
-    @Override
-    public void handleTransportError(WebSocketSession session, Throwable exception) {
-        Long userId = extractUserId(session);
-        log.warn("WebSocket 传输错误: userId={}, error={}", userId, exception.getMessage());
+    public String workspace(Long userId, String clientId) {
+        return requireClient(userId, clientId).workspace();
     }
 
-    /**
-     * 向指定用户的本地客户端发送工具执行请求，等待结果返回
-     */
-    public String executeTool(Long userId, String tool, Map<String, Object> args) throws Exception {
-        WebSocketSession session = userSessions.get(userId);
-        if (session == null || !session.isOpen()) {
-            throw new IllegalStateException("本地客户端未连接，请确保已启动本地 Agent 客户端并登录");
+    public List<ProjectWorkspace> workspaces(Long userId) {
+        return clients.entrySet().stream()
+                .filter(entry -> entry.getKey().userId().equals(userId) && entry.getValue().session().isOpen())
+                .map(entry -> new ProjectWorkspace(entry.getKey().clientId(), entry.getValue().workspace()))
+                .sorted(Comparator.comparing(ProjectWorkspace::workspacePath).thenComparing(ProjectWorkspace::clientId))
+                .toList();
+    }
+
+    /** Resolve once per chat, then carry the same clientId through every tool callback. */
+    public ProjectWorkspace resolveWorkspace(Long userId, String clientId) {
+        if (clientId != null && !clientId.isBlank()) {
+            return new ProjectWorkspace(clientId, workspace(userId, clientId));
         }
+        List<ProjectWorkspace> available = workspaces(userId);
+        if (available.isEmpty()) throw new IllegalStateException("请先在 IDEA 项目中连接 AI Chat Agent 插件，工作区将自动使用该项目目录");
+        if (available.size() > 1) throw new IllegalStateException("当前有多个 IDEA 项目连接，请在目标项目的插件窗口中发起对话");
+        return available.getFirst();
+    }
 
-        String requestId = "req-" + System.currentTimeMillis() + "-" + Thread.currentThread().getId();
-        CompletableFuture<String> future = new CompletableFuture<>();
-        pendingRequests.put(requestId, future);
-
-        Map<String, Object> payload = Map.of(
-                "requestId", requestId,
-                "tool", tool,
-                "args", args != null ? args : Map.of()
-        );
-        session.sendMessage(new TextMessage(om.writeValueAsString(payload)));
-
-        // 等待结果，超时 30 秒
-        String result;
-        try {
-            result = future.get(30, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            pendingRequests.remove(requestId);
-            throw new RuntimeException("工具执行超时或中断: " + e.getMessage(), e);
-        }
-        return result;
+    private Client requireClient(Long userId, String clientId) {
+        Client client = clients.get(new Key(userId, clientId == null ? "" : clientId));
+        if (client == null || !client.session().isOpen()) throw new IllegalStateException("当前 IDEA 项目未连接，请在该项目窗口重新连接");
+        return client;
     }
 
     public boolean isClientConnected(Long userId) {
-        WebSocketSession session = userSessions.get(userId);
-        return session != null && session.isOpen();
+        return !workspaces(userId).isEmpty();
     }
 
-    private Long extractUserId(WebSocketSession session) {
-        // 从 query 参数提取 token
-        URI uri = session.getUri();
-        if (uri == null || uri.getQuery() == null) return null;
-        String query = uri.getQuery();
-        for (String param : query.split("&")) {
-            if (param.startsWith("token=")) {
-                String token = param.substring(6);
-                try {
-                    Object loginId = StpUtil.getLoginIdByToken(token);
-                    if (loginId != null) {
-                        return Long.parseLong(loginId.toString());
-                    }
-                } catch (Exception e) {
-                    log.warn("WebSocket token 验证失败: {}", token);
-                    return null;
-                }
+    public String executeTool(Long userId, String tool, Map<String, Object> args) throws Exception {
+        return executeTool(userId, resolveWorkspace(userId, null).clientId(), tool, args);
+    }
+
+    public String executeTool(Long userId, String clientId, String tool, Map<String, Object> args) throws Exception {
+        WebSocketSession session = requireClient(userId, clientId).session();
+        String requestId = UUID.randomUUID().toString();
+        Pending request = new Pending(session, new CompletableFuture<>());
+        pending.put(requestId, request);
+        try {
+            synchronized (session) {
+                session.sendMessage(new TextMessage(mapper.writeValueAsString(Map.of("requestId", requestId, "tool", tool, "args", args == null ? Map.of() : args))));
             }
+            return request.future().get(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        } finally {
+            pending.remove(requestId, request);
         }
-        return null;
     }
 }

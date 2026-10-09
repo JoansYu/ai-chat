@@ -58,7 +58,7 @@
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                              用户浏览器 (Vue 3)                          │
-│        登录 / 会话管理 / 流式聊天窗 / 工作区授权设置 / Markdown 渲染        │
+│        登录 / 会话管理 / 流式聊天窗 / IDEA 项目连接状态 / Markdown 渲染        │
 └──────────────────────────────┬─────────────────────────────────────────┘
                                │ HTTP + SSE（text/event-stream）
 ┌──────────────────────────────▼─────────────────────────────────────────┐
@@ -79,7 +79,7 @@
                                │ WebSocket (ws://)
 ┌──────────────────────────────▼─────────────────────────────────────────┐
 │                    local-agent-client (用户本机)                         │
-│   登录认证 ──► 工作区授权 ──► 接收工具请求 ──► 本地文件增删改查（沙箱校验）   │
+│   登录认证 ──► 自动绑定项目 ──► 接收工具请求 ──► 本地文件增删改查（沙箱校验）   │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -245,17 +245,10 @@ agent:
     url: ${AGENT_PYTHON_URL}         # 如 http://localhost:8000
 ```
 
-### 本地客户端
+### IDEA 插件连接
 
-编辑 `local-agent-client/src/main/resources/application.yml`：
-
-```yaml
-agent:
-  server-url: http://localhost:8080  # Java 后端地址
-  username: your-username
-  password: your-password
-  workspace-path: /path/to/your/code # 授权的工作区路径
-```
+在 IDEA 中打开目标项目，进入 `Settings | Tools | AI Chat Agent`，配置后端地址与账号后连接。
+插件自动从当前 `Project.basePath` 获取并上报项目根目录，不需要填写 `workspace-path`。
 
 ### 环境变量速查表
 
@@ -350,10 +343,11 @@ Agent 任务额外推送：
 
 ### 使用流程
 
-1. 用户在前端设置页（🔧）输入并授权**本地目录路径**
-2. 本地客户端启动时自动：登录 → 授权工作区 → 建立 WebSocket 连接
-3. 对话中 Agent 的文件工具请求经 Java 后端转发至本地客户端执行
-4. 未连接本地客户端时自动降级为服务器本地执行（开发模式）
+1. 在目标 IDEA 项目中连接 `ai-agent-plugin`，使用与网页相同的账号。
+2. 插件自动读取项目根目录，通过 WebSocket 注册项目连接和工作区。
+3. 插件对话按当前项目的 `clientId` 路由；网页对话自动使用该账号唯一在线的 IDEA 项目。
+4. 网页右下角 🔧 仅展示项目连接状态；多个项目同时在线时，请在目标项目的插件窗口发起对话。
+5. 未连接或项目断线时返回明确提示，不再读取数据库中的手动授权目录，也不回退到服务器文件系统。
 
 ---
 
@@ -386,9 +380,7 @@ Agent 任务额外推送：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/workspace` | 查询授权状态 |
-| POST | `/api/workspace/authorize` | 授权工作区路径 |
-| POST | `/api/workspace/revoke` | 撤销授权 |
+| GET | `/api/workspace` | 查询当前账号在线的 IDEA 项目工作区（connected、workspacePath、projects） |
 | POST | `/api/agent/tools/execute` | Agent 工具执行入口（内部回调） |
 
 ### Agent 引擎（Python）
@@ -427,7 +419,7 @@ t_user ──< t_agent_message          （Agent 多轮记忆，按 userId + ses
 
 - **会话双通道**：普通对话存 `t_chat_session/message`，Agent 任务存 `t_agent_message`，职责分离
 - **Agent 记忆**：`tool_calls` 以 JSON 存储，`seq` 保证消息顺序；按 `user_id + session_id` 隔离
-- **工作区授权**：`authorized=1` 表示当前生效授权，授权路径做 `../` 逃逸校验
+- **项目工作区**：运行时使用插件上报的项目根目录；`t_user_workspace` 为旧版授权记录，不再用于 Agent 工作区选择。
 - **上下文截断**：单会话超过 `AGENT_MEMORY_MAX_MESSAGES`（默认 24）时仅保留最近 N 条
 
 ---
@@ -447,16 +439,15 @@ t_user ──< t_agent_message          （Agent 多轮记忆，按 userId + ses
 
 ## ❓ FAQ 常见问题
 
-### 1. 启动后端报「未授权工作区」？
+### 1. 提示先连接 IDEA 项目？
 
-Agent 需要代码读取能力时，需先在网页右下角 🔧 设置中授权工作区路径；或确认 `local-agent-client` 已启动并授权。未授权时工具会返回「沙箱拦截：未设置授权工作区」。
+请在目标 IDEA 项目中连接 AI Chat Agent 插件。工作区自动使用该项目根目录，无需在网页填写或授权路径。网页 🔧 可以刷新并查看当前账号的在线项目。
 
 ### 2. 网页上无法操作本地文件？
 
-浏览器受沙箱限制无法直接读本机文件，必须满足：
-1. `local-agent-client` 已在本机启动（日志显示 `✅ WebSocket 已连接`）
-2. `application.yml` 中的 `workspace-path` 指向目标目录
-3. 后端 `agent.callback-url` 能正确回调（默认自动探测本机 IP）
+1. 确认插件与网页使用同一账号，且插件已连接 Java 后端。
+2. 只连接一个项目时网页自动绑定；有多个项目时，请在目标项目插件窗口发起对话。
+3. Python 的 Java 回调地址必须可达；文件操作通过 WebSocket 在 IDEA 内执行。
 
 ### 3. 对话时前端"卡住"没有响应？
 
@@ -515,3 +506,35 @@ Copyright © 2026 AI Chat Contributors
 <div align="center">
   Made with ❤️ by AI Chat Contributors
 </div>
+
+
+## IDEA 当前项目阅读、代码生成与重构
+
+插件现在按 IDEA Project 建立独立连接，自动使用当前聊天窗口所属项目的根目录，无需填写工作区路径。多个窗口使用独立 clientId，工具调用按登录用户 + clientId 路由；项目关闭后连接释放。Java/Python 可以部署在另一台机器，IDE 请求不会回退到服务器文件系统。
+
+### 使用
+
+1. 启动 backend 与 agent-service。Python 默认不启动服务器文件系统 MCP；旧网页场景如需使用，设置 ENABLE_FILESYSTEM_MCP=true。
+2. 使用 JDK 21 在 ai-agent-plugin 执行 gradlew.bat test buildPlugin，通过 IDEA「从磁盘安装插件」选择 build/distributions 中的 ZIP，重启 IDE。
+3. 打开目标项目，在 Settings | Tools | AI Chat Agent 设置后端地址、账号、密码，在该项目 AI Chat 窗口点击连接。后端 agent.callback-url 必须可从 Python 服务访问。
+4. 输入“阅读当前项目并解释入口和主要模块”、“按照现有风格生成一个服务类”或“查找这个 Java 类的引用并重命名”。
+
+### 工具与行为
+
+- get_project_context：当前项目、活动文件、选区和光标位置；read_file/read_file_region 优先读取编辑器未保存内容，单次最多 400 行。
+- list_directory/read_project_structure、glob_files、search_code：限制扫描范围和输出，排除依赖与构建目录。
+- get_symbol_info/find_usages：基于 Java PSI 索引查询定义、UTF-16 offset 和引用；索引未完成会明确返回错误。其他语言可用文件和文本工具。
+- write_file 只创建新文件；已有文件用 edit_file 唯一匹配替换，拒绝不匹配/歧义修改。写入经过 IDEA Document/WriteCommandAction，保存后可在 IDE 撤销。
+- rename_symbol：使用 Java 声明名称的零基 UTF-16 offset 启动 IDEA RenameProcessor，显示引用预览；需在 Refactoring Preview 点击 Do Refactor 才应用。不会把“已启动预览”报告成“已完成重命名”。
+- 路径仅允许相对项目根目录；会校验真实路径及符号链接/junction 的已有父目录，拒绝项目外读写。文本文件上限 1 MiB。
+- 插件与 Java/Python 服务必须一起升级，clientId/client_id 会经过聊天请求、Agent 上下文和回调返回同一个项目连接。
+
+### 验收
+
+- 同时打开两个项目并分别连接，要求读取各自 README，结果应来自对应窗口；断开其中一个，另一个仍可工作。
+- 在编辑器修改文件但不保存，再要求读取，应看到修改后的内容。
+- 要求创建新文件、修改其中唯一一段代码，检查项目视图/编辑器内容，并用 IDEA Undo 撤销。
+- 对 Java 类执行引用查询与重命名，检查预览后应用，确认引用同步更新。
+- 尝试 ../outside.java、绝对路径及指向项目外的链接应被拒绝；断开 IDE 后请求不得写入服务器。
+
+自动检查：插件 gradlew.bat test buildPlugin；后端 mvn test；Python 在 agent-service 执行 python -m unittest test_ide_tools.py。真实模型回复与 PSI 交互预览仍需上述 IDE 验收。

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -14,7 +15,9 @@ from agent_graph import run_langgraph_agent, run_langgraph_agent_stream
 # 生命周期管理：启动时自动连接 MCP，停止时优雅断开
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await mcp_manager.start(DEFAULT_WORKSPACE)
+    # IDE file access is provided by the plugin, so no server filesystem MCP is needed.
+    if os.getenv("ENABLE_FILESYSTEM_MCP", "false").lower() == "true":
+        await mcp_manager.start(DEFAULT_WORKSPACE)
     yield
     await mcp_manager.stop()
 
@@ -28,7 +31,8 @@ class ChatRequest(BaseModel):
     workspace_root: Optional[str] = ""
     java_callback_url: Optional[str] = ""
     user_token: Optional[str] = ""
-    max_steps: Optional[int] = DEFAULT_MAX_STEPS
+    client_id: Optional[str] = None
+    max_steps: int = DEFAULT_MAX_STEPS
 
 
 @app.get("/health")
@@ -44,7 +48,8 @@ async def agent_chat(req: ChatRequest):
     ctx = {
         "workspace_root": req.workspace_root,
         "java_callback_url": req.java_callback_url,
-        "user_token": req.user_token
+        "user_token": req.user_token,
+        "client_id": req.client_id
     }
 
     try:
@@ -60,7 +65,8 @@ async def agent_stream(req: ChatRequest):
     ctx = {
         "workspace_root": req.workspace_root,
         "java_callback_url": req.java_callback_url,
-        "user_token": req.user_token
+        "user_token": req.user_token,
+        "client_id": req.client_id
     }
     logger.info(f"📥 [Stream] user_input={req.user_input!r}")
 

@@ -131,7 +131,7 @@ public class AgentPythonClient {
             String bodyJson = buildRequestBody(request, workspacePath, userToken);
             log.info("📤 转发 Python Stream 请求: user_input={}, history条数={}, 目标={}",
                     request.userInput(), request.history() != null ? request.history().size() : 0, pythonUrl);
-            log.info("📤 请求体: {}", bodyJson);
+            // Request bodies include credentials; do not log them.
 
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(pythonUrl + "/api/v1/agent/stream"))
@@ -163,7 +163,10 @@ public class AgentPythonClient {
 
                     JsonNode node = objectMapper.readTree(data);
                     Map<String, Object> event = objectMapper.convertValue(node, Map.class);
-                    onEvent.accept(event);
+                    if ("error".equals(event.get("type"))) {
+                        throw new IllegalStateException(String.valueOf(event.get("message")));
+                    }
+                    if (!"done".equals(event.get("type"))) onEvent.accept(event);
 
                     String type = (String) event.get("type");
                     if ("done".equals(type) || "error".equals(type)) {

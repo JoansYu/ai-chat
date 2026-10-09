@@ -124,7 +124,7 @@ function openSettings() {
     <!-- 设置弹窗 -->
     <Settings ref="settingsRef" />
     <!-- 设置入口按钮 -->
-    <button class="settings-fab" @click="openSettings" title="工作区授权设置">🔧</button>
+    <button class="settings-fab" @click="openSettings" title="IDEA 项目工作区">🔧</button>
   </div>
 </template>
 

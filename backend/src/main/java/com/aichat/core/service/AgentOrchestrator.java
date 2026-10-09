@@ -30,7 +30,7 @@ public class AgentOrchestrator {
 
         try {
             AgentPythonResponse response = client.executeAgent(
-                    AgentPythonRequest.of(userInput, history), ctx.workspacePath(), ctx.userToken());
+                    AgentPythonRequest.of(userInput, history, ctx.clientId()), ctx.workspacePath(), ctx.userToken());
 
             if (!"success".equals(response.status())) {
                 String detail = response.errorMessage();
@@ -77,7 +77,7 @@ public class AgentOrchestrator {
             final StringBuilder fullAnswer = new StringBuilder();
 
             client.streamExecuteAgent(
-                    AgentPythonRequest.of(userInput, history),
+                    AgentPythonRequest.of(userInput, history, ctx.clientId()),
                     ctx.workspacePath(), ctx.userToken(),
                     event -> {
                         String type = (String) event.get("type");

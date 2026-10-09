@@ -16,18 +16,10 @@ export async function register(username, password) {
   return request.post('/register', {username, password})
 }
 
-// ===================== 工作区授权 =====================
+// ===================== IDEA 项目工作区 =====================
 
 export async function getWorkspaceStatus() {
   return request.get('/workspace')
-}
-
-export async function authorizeWorkspace(workspacePath) {
-  return request.post('/workspace/authorize', {workspacePath})
-}
-
-export async function revokeWorkspace() {
-  return request.post('/workspace/revoke')
 }
 
 export async function createSession(){

@@ -10,9 +10,7 @@ import com.aichat.model.AgentContext;
 import com.aichat.model.ChatMessage;
 import com.aichat.model.ChatSession;
 import com.aichat.service.SessionService;
-import com.aichat.service.WorkspaceService;
 import jakarta.validation.constraints.NotBlank;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -37,20 +35,21 @@ public class AgentController {
     private final AgentOrchestrator orchestrator;
     private final RateLimiter limiter;
     private final SessionService sessionService;
-    private final WorkspaceService workspaceService;
     private final Executor executor;
+    private final com.aichat.websocket.AgentToolWebSocketHandler projectClients;
 
     public AgentController(AgentOrchestrator orchestrator, RateLimiter limiter,
-                           SessionService sessionService, WorkspaceService workspaceService,
-                           @Qualifier("chatExecutor") Executor executor) {
+                           SessionService sessionService,
+                           @Qualifier("chatExecutor") Executor executor,
+                           com.aichat.websocket.AgentToolWebSocketHandler projectClients) {
         this.orchestrator = orchestrator;
         this.limiter = limiter;
         this.sessionService = sessionService;
-        this.workspaceService = workspaceService;
         this.executor = executor;
+        this.projectClients = projectClients;
     }
 
-    public record AgentChatRequest(String sessionId, @NotBlank(message = "消息不能为空") String message) {
+    public record AgentChatRequest(String sessionId, @NotBlank(message = "消息不能为空") String message, String clientId) {
     }
 
     /**
@@ -67,13 +66,20 @@ public class AgentController {
         SseEmitter emitter = new SseEmitter(0L);
 
         // ⚠️ Sa-Token 上下文绑定在请求线程（ThreadLocal），必须在 executor.execute() 之前、
-        // 还在 Web 上下文中时获取用户信息与工作区授权，再传入子线程，否则子线程拿不到 HttpServletRequest。
+        // 在请求线程中获取用户信息和项目连接，再传入子线程。
         final long userId = StpUtil.getLoginIdAsLong();
         final String userToken = StpUtil.getTokenValue();
         final String sid = (StringUtil.isNullOrEmpty(req.sessionId()))
                 ? ("a" + System.currentTimeMillis() + "-" + userId)
                 : req.sessionId();
-        final String workspacePath = workspaceService.getAuthorizedWorkspacePath();
+        final com.aichat.websocket.AgentToolWebSocketHandler.ProjectWorkspace workspace;
+        try {
+            workspace = projectClients.resolveWorkspace(userId, req.clientId());
+        } catch (IllegalStateException e) {
+            sendEvent(emitter, "error", Map.of("type", "error", "message", e.getMessage()));
+            emitter.complete();
+            return emitter;
+        }
 
         executor.execute(() -> {
             try {
@@ -88,7 +94,7 @@ public class AgentController {
                     return;
                 }
 
-                AgentContext ctx = new AgentContext(userId, sid, workspacePath, userToken);
+                AgentContext ctx = new AgentContext(userId, sid, workspace.workspacePath(), userToken, workspace.clientId());
 
                 ChatSession session = sessionService.getOrCreate(sid);
                 if (session.isEmpty() || "新会话".equals(session.getTitle())) {

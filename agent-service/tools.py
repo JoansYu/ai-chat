@@ -25,6 +25,7 @@ async def get_current_time(ctx: dict) -> str:
 # Java 回调工具
 # ====================================================
 async def _call_java_tool_async(tool_name: str, args: dict, ctx: dict) -> str:
+    ctx = ctx or {}
     callback_url = ctx.get("java_callback_url", "")
     token = ctx.get("user_token", "")
 
@@ -35,7 +36,7 @@ async def _call_java_tool_async(tool_name: str, args: dict, ctx: dict) -> str:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{callback_url}/api/agent/tools/execute",
-                json={"tool": tool_name, "args": args},
+                json={"tool": tool_name, "args": args, "clientId": ctx.get("client_id")},
                 headers={"satoken": token},
                 timeout=35.0
             )
@@ -122,7 +123,7 @@ LOCAL_TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "read_project_structure",
-            "description": "查看项目目录结构，并展示代码文件内的类与方法概览。适合定位项目组织、快速了解有哪些模块。",
+            "description": "查看当前项目的代码和配置文件结构；用 get_symbol_info 进一步查询 Java 类和方法。",
             "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "相对工作区的目录路径，默认 '.'"}}}
         }
     },
@@ -168,3 +169,45 @@ LOCAL_TOOLS_ROUTER = {
     "find_usages": find_usages,
     "read_file_region": read_file_region
 }
+
+
+# These tools always execute through the authenticated Java callback.
+# In IDE mode client_id routes the request to exactly one project window.
+async def get_project_context(ctx: dict = None) -> str:
+    return await _call_java_tool_async("get_project_context", {}, ctx)
+
+
+async def read_file(path: str, ctx: dict = None) -> str:
+    return await _call_java_tool_async("read_file", {"path": path}, ctx)
+
+
+async def list_directory(path: str = ".", ctx: dict = None) -> str:
+    return await _call_java_tool_async("list_directory", {"path": path}, ctx)
+
+
+async def write_file(path: str, content: str, ctx: dict = None) -> str:
+    return await _call_java_tool_async("write_file", {"path": path, "content": content}, ctx)
+
+
+async def edit_file(path: str, old_string: str, new_string: str, ctx: dict = None) -> str:
+    return await _call_java_tool_async("edit_file", {"path": path, "old_string": old_string, "new_string": new_string}, ctx)
+
+
+async def rename_symbol(path: str, offset: int, new_name: str, ctx: dict = None) -> str:
+    return await _call_java_tool_async("rename_symbol", {"path": path, "offset": offset, "new_name": new_name}, ctx)
+
+
+def _schema(name, description, properties, required=()):
+    return {"type": "function", "function": {"name": name, "description": description,
+            "parameters": {"type": "object", "properties": properties, "required": list(required)}}}
+
+
+LOCAL_TOOLS_SCHEMA.extend([
+    _schema("get_project_context", "读取当前 IDEA 项目名称、根目录、活动文件、光标 UTF-16 offset 和选区；项目任务首先调用。", {}),
+    _schema("read_file", "读取当前项目文件（含未保存编辑器内容），最多 400 行；后续使用 read_file_region。", {"path": {"type": "string"}}, ["path"]),
+    _schema("list_directory", "列出相对当前项目的代码和配置文件，自动排除构建产物。", {"path": {"type": "string"}}),
+    _schema("write_file", "生成一个新文件并创建父目录；已存在文件必须先读取后用 edit_file；IDE 支持撤销。", {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+    _schema("edit_file", "在当前编辑器内容中唯一匹配 old_string 并替换；修改前必须读取，保留无关代码。", {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, ["path", "old_string", "new_string"]),
+    _schema("rename_symbol", "对 Java 声明启动 IDEA PSI 重命名预览，同步处理引用；用户需在预览窗口确认，工具返回不代表已应用。offset 为声明名称的零基 UTF-16 偏移，使用 get_symbol_info 获取。", {"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "new_name": {"type": "string"}}, ["path", "offset", "new_name"]),
+])
+LOCAL_TOOLS_ROUTER.update({fn.__name__: fn for fn in [get_project_context, read_file, list_directory, write_file, edit_file, rename_symbol]})
