@@ -1,0 +1,37 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.github.joansyu.aiagentplugin</id>
+    <name>AI Chat Agent</name>
+    <vendor>joansyu</vendor>
+    <description><![CDATA[
+        <p><b>AI Chat Agent</b> integrates the multi-turn AI chat &amp; ReAct Agent capabilities of the ai-chat platform into IntelliJ IDEA.</p>
+        <ul>
+            <li>Inline chat ToolWindow with SSE streaming (typewriter) output</li>
+            <li>Agent tool calls executed locally via IntelliJ PSI / VirtualFileManager (replaces the standalone local-agent-client)</li>
+            <li>Configure backend address, account and workspace in Settings | Tools | AI Chat Agent</li>
+        </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <!-- IdeToolExecutor 使用 Java PSI，必须声明 Java 模块依赖 -->
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="AI Chat" anchor="right"
+                    factoryClass="com.github.joansyu.aiagentplugin.ui.ChatToolWindowFactory"/>
+        <applicationConfigurable parentId="tools"
+                                 instance="com.github.joansyu.aiagentplugin.settings.AiChatConfigurable"
+                                 id="com.github.joansyu.aiagentplugin.settings.AiChatConfigurable"
+                                 displayName="AI Chat Agent"/>
+        <postStartupActivity implementation="com.github.joansyu.aiagentplugin.startup.AiChatStartupActivity"/>
+    </extensions>
+
+    <actions>
+        <action id="com.github.joansyu.aiagentplugin.actions.ToggleConnectionAction"
+                class="com.github.joansyu.aiagentplugin.actions.ToggleConnectionAction"
+                text="AI Chat: Toggle Connection"
+                description="Connect / disconnect the AI Chat agent backend">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
